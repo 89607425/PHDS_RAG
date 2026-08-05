@@ -1,0 +1,32 @@
+# 环境变量 (含 API 密钥)
+.env
+
+# 向量数据库
+chroma_db/
+
+# 知识库文档
+wiki_docs/
+*.docx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# Gradio
+.gradio/
+
+# 日志
+*.log
