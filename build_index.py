@@ -1,4 +1,4 @@
-from document_loader import load_all_docx
+from document_loader import load_all_docs
 from chunker import split_documents
 from vector_store import build_vector_store
 from dotenv import load_dotenv
@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 if __name__ == "__main__":
-    print("📄 加载 Word 文档...")
-    docs = load_all_docx("./wiki_docs")
+    print("📄 加载文档 (Word + PDF)...")
+    docs = load_all_docs("./wiki_docs")
     print(f"   共加载 {len(docs)} 篇文档")
 
     print("✂️ 分块处理...")

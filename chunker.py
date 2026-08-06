@@ -1,4 +1,4 @@
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 def split_documents(docs: list[dict]) -> list[dict]:
     splitter = RecursiveCharacterTextSplitter(
