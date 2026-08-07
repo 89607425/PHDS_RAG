@@ -1,5 +1,6 @@
 from langchain_openai import OpenAIEmbeddings
 import os
+import httpx
 
 def get_embedding_model():
     return OpenAIEmbeddings(
@@ -10,4 +11,5 @@ def get_embedding_model():
         check_embedding_ctx_length=False,
         show_progress_bar=True,
         chunk_size=20,
+        http_client=httpx.Client(proxy=None),
     )

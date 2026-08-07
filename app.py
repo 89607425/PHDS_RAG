@@ -2,12 +2,14 @@
 import html
 import json
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi import UploadFile, Form, File
 from pydantic import BaseModel
 from datetime import datetime
 from starlette.middleware.base import BaseHTTPMiddleware
-from rag_chain import ask, _check_knowledge_base
+from rag_chain import ask, ask_stream, _check_knowledge_base
+from kb_manager import list_documents, upload_document, delete_document, rebuild_index
 from database import init_db
 from auth import (
     send_verification_code, verify_code, create_session, validate_session,
@@ -16,88 +18,179 @@ from auth import (
 )
 from dotenv import load_dotenv
 
+
 load_dotenv()
 init_db()
 
 import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-LOGIN_PAGE = """<!DOCTYPE html>
+LOGIN_PAGE = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>公司知识助手 - 登录</title>
+<title>公司知识助手</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh}
-.card{background:#fff;border-radius:16px;padding:40px 36px;width:380px;box-shadow:0 2px 12px rgba(20,24,35,0.06),0 1px 4px rgba(20,24,35,0.04)}
-.card h1{font-size:22px;color:#1c1c1e;text-align:center;margin-bottom:4px}
-.card .sub{font-size:13px;color:#9aa0aa;text-align:center;margin-bottom:28px}
-.card label{display:block;font-size:13px;color:#5f6470;margin-bottom:6px;font-weight:500}
-.card input[type=email],.card input[type=text]{width:100%;padding:10px 14px;border:1px solid #e6e8ec;border-radius:10px;font-size:15px;color:#1c1c1e;outline:none;transition:border-color .2s}
-.card input:focus{border-color:#2563eb}
-.card .row{display:flex;gap:10px}
-.card .row input{flex:1}
-.card button{border:none;border-radius:10px;padding:10px 20px;font-size:14px;cursor:pointer;font-weight:500;transition:background .2s,opacity .2s;white-space:nowrap}
-.card .btn-pri{background:#2563eb;color:#fff;width:100%;margin-top:20px}
-.card .btn-pri:hover{background:#1d4ed8}
-.card .btn-pri:disabled{opacity:0.5;cursor:not-allowed}
-.card .btn-sec{background:#f1f3f7;color:#2563eb}
-.card .btn-sec:hover{background:#e8f1fc}
-.card .msg{font-size:12px;margin-top:8px;text-align:center;min-height:18px}
-.card .msg.ok{color:#16a34a}
-.card .msg.err{color:#dc2626}
-.card .step2{display:none}
-.card .step2.show{display:block}
+body {
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Helvetica Neue",Helvetica,Arial,sans-serif;
+  background:#f0f2f5; display:flex; align-items:center; justify-content:center; min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+.container { width:100%; max-width:440px; padding:24px }
+.brand { text-align:center; margin-bottom:36px }
+.brand-icon {
+  width:64px; height:64px; border-radius:18px;
+  background:linear-gradient(135deg,#2563eb,#7c3aed);
+  display:inline-flex; align-items:center; justify-content:center;
+  font-size:28px; margin-bottom:16px;
+  box-shadow:0 8px 24px rgba(37,99,235,0.25);
+}
+.brand h1 { font-size:24px; font-weight:700; color:#1e293b; letter-spacing:-0.3px }
+.brand p { font-size:14px; color:#94a3b8; margin-top:6px }
+.card {
+  background:#fff; border-radius:20px; padding:32px 28px;
+  box-shadow:0 1px 3px rgba(0,0,0,0.04),0 8px 32px rgba(0,0,0,0.06);
+}
+.step { transition: opacity .25s,transform .25s }
+.step.hidden { display:none }
+.input-group { margin-bottom:18px }
+.input-group label { display:block; font-size:13px; font-weight:600; color:#475569; margin-bottom:6px; letter-spacing:0.2px }
+.input-group .hint { font-size:11px; color:#94a3b8; font-weight:400; margin-left:4px }
+.input-row { display:flex; gap:10px }
+.input-row input { flex:1 }
+input[type=email],input[type=text] {
+  width:100%; padding:12px 14px; border:1.5px solid #e2e8f0; border-radius:12px;
+  font-size:15px; color:#1e293b; outline:none; transition:all .2s; background:#f8fafc;
+  font-family:inherit;
+}
+input:focus { border-color:#2563eb; background:#fff; box-shadow:0 0 0 3px rgba(37,99,235,0.08) }
+input::placeholder { color:#cbd5e1 }
+.btn {
+  border:none; border-radius:12px; padding:11px 20px; font-size:14px; cursor:pointer;
+  font-weight:600; transition:all .2s; white-space:nowrap; font-family:inherit;
+  display:inline-flex; align-items:center; justify-content:center; gap:6px;
+}
+.btn-primary { background:linear-gradient(135deg,#2563eb,#4f46e5); color:#fff; width:100%; margin-top:4px }
+.btn-primary:hover { transform:translateY(-1px); box-shadow:0 4px 14px rgba(37,99,235,0.35) }
+.btn-primary:disabled { opacity:0.5; cursor:not-allowed; transform:none; box-shadow:none }
+.btn-ghost { background:transparent; color:#64748b; font-weight:500 }
+.btn-ghost:hover { color:#2563eb; background:rgba(37,99,235,0.06) }
+.msg { font-size:12px; margin-top:8px; min-height:18px; text-align:center; font-weight:500 }
+.msg.ok { color:#059669 }
+.msg.err { color:#dc2626 }
+.footer { text-align:center; margin-top:28px; font-size:12px; color:#94a3b8; line-height:1.8 }
+.footer a { color:#64748b; text-decoration:none; transition:color .2s }
+.footer a:hover { color:#2563eb }
+.code-box {
+  display:flex; gap:10px; justify-content:center; margin:4px 0 18px
+}
+.code-digit {
+  width:44px; height:52px; border:2px solid #e2e8f0; border-radius:12px;
+  font-size:20px; text-align:center; font-family:"SF Mono","Monaco","Menlo",monospace;
+  font-weight:600; color:#1e293b; outline:none; background:#f8fafc;
+  transition:all .2s;
+}
+.code-digit:focus { border-color:#2563eb; background:#fff; box-shadow:0 0 0 3px rgba(37,99,235,0.08) }
+.spinner { width:18px; height:18px; border:2px solid rgba(255,255,255,0.3); border-top-color:#fff; border-radius:50%; animation:spin .6s linear infinite; display:none }
+@keyframes spin { to { transform:rotate(360deg) } }
+.powered { display:flex; align-items:center; justify-content:center; gap:6px; margin-top:20px; font-size:11px; color:#94a3b8 }
+.powered-dot {
+  width:10px; height:10px; border-radius:3px; background:linear-gradient(135deg,#2563eb,#7c3aed)
+}
 </style>
 </head>
 <body>
-<div class="card">
-<h1>📋 公司知识助手</h1>
-<div class="sub">请输入工作邮箱登录</div>
-<div id="step1">
-  <label>邮箱地址</label>
-  <div class="row">
-    <input type="email" id="email" placeholder="name@company.com" autocomplete="email">
-    <button class="btn-sec" onclick="sendCode()" id="sendBtn">获取验证码</button>
-  </div>
-  <div id="msg1" class="msg"></div>
+<div class="container">
+<div class="brand">
+  <div class="brand-icon">📋</div>
+  <h1>公司知识助手</h1>
+  <p>企业级 RAG 智能问答系统</p>
 </div>
-<div id="step2" class="step2">
-  <label>验证码</label>
-  <input type="text" id="code" placeholder="6 位验证码" maxlength="6" autocomplete="one-time-code">
-  <button class="btn-pri" onclick="verifyLogin()" id="loginBtn">登录</button>
-  <div id="msg2" class="msg"></div>
+<div class="card">
+  <div class="step" id="stepEmail">
+    <div class="input-group">
+      <label>工作邮箱</label>
+      <input type="email" id="email" placeholder="name@company.com" autocomplete="email" autofocus>
+    </div>
+    <button class="btn btn-primary" onclick="sendCode()" id="sendBtn">
+      <span id="sendBtnText">发送验证码</span>
+      <span class="spinner" id="sendSpinner"></span>
+    </button>
+    <div id="msgEmail" class="msg"></div>
+  </div>
+  <div class="step hidden" id="stepCode">
+    <div style="text-align:center;margin-bottom:6px">
+      <span style="font-size:13px;color:#64748b">验证码已发送至</span>
+      <span style="font-size:13px;color:#1e293b;font-weight:600" id="sentEmailDisplay"></span>
+    </div>
+    <div class="code-box" id="codeInputs">
+      <input type="text" class="code-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" oninput="onCodeInput(this)" onkeydown="onCodeKeydown(event,0)" onpaste="onCodePaste(event)">
+      <input type="text" class="code-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" oninput="onCodeInput(this)" onkeydown="onCodeKeydown(event,1)" onpaste="onCodePaste(event)">
+      <input type="text" class="code-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" oninput="onCodeInput(this)" onkeydown="onCodeKeydown(event,2)" onpaste="onCodePaste(event)">
+      <input type="text" class="code-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" oninput="onCodeInput(this)" onkeydown="onCodeKeydown(event,3)" onpaste="onCodePaste(event)">
+      <input type="text" class="code-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" oninput="onCodeInput(this)" onkeydown="onCodeKeydown(event,4)" onpaste="onCodePaste(event)">
+      <input type="text" class="code-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" oninput="onCodeInput(this)" onkeydown="onCodeKeydown(event,5)" onpaste="onCodePaste(event)">
+    </div>
+    <div id="msgCode" class="msg"></div>
+    <button class="btn btn-primary" onclick="verifyLogin()" id="loginBtn" style="margin-top:20px">
+      <span id="loginBtnText">验证并登录</span>
+      <span class="spinner" id="loginSpinner"></span>
+    </button>
+    <div style="text-align:center;margin-top:16px">
+      <button class="btn btn-ghost" onclick="goBack()" style="font-size:13px">← 更换邮箱</button>
+      <span style="margin:0 8px;color:#e2e8f0">|</span>
+      <button class="btn btn-ghost" onclick="sendCode()" id="resendBtn" style="font-size:13px" disabled>重新发送 (60s)</button>
+    </div>
+  </div>
+</div>
+<div class="footer">
+  <div class="powered"><span class="powered-dot"></span>DeepSeek · 硅基流动 强力驱动</div>
 </div>
 </div>
 <script>
-let sentEmail='';let countdown=0;
-function setMsg(el,text,cls){document.getElementById(el).textContent=text;document.getElementById(el).className='msg '+cls}
+var sentEmail='';var countdown=0;var timers=[];
+function setMsg(id,text,cls){var el=document.getElementById(id);el.textContent=text;el.className='msg '+cls}
+function showStep(s){var steps={email:'stepEmail',code:'stepCode'};for(var k in steps)document.getElementById(steps[k]).classList[k===s?'remove':'add']('hidden')}
+function getCode(){var s='';for(var i=0;i<6;i++){s+=document.getElementById('codeInputs').children[i].value}return s}
+function focusCode(i){var inputs=document.getElementById('codeInputs').children;if(i>=0&&i<6)inputs[i].focus()}
+function onCodeInput(el){el.value=el.value.replace(/\D/g,'');var idx=Array.from(el.parentElement.children).indexOf(el);if(el.value&&idx<5)focusCode(idx+1);checkAutoLogin()}
+function onCodeKeydown(e,idx){if(e.key==='Backspace'&&!e.target.value&&idx>0)focusCode(idx-1)}
+function onCodePaste(e){e.preventDefault();var text=(e.clipboardData||window.clipboardData).getData('text').replace(/\D/g,'');var inputs=document.getElementById('codeInputs').children;for(var i=0;i<6&&i<text.length;i++){inputs[i].value=text[i]}if(text.length>0)focusCode(Math.min(text.length,5));checkAutoLogin()}
+function checkAutoLogin(){if(getCode().length===6)verifyLogin()}
+function goBack(){showStep('email');setMsg('msgCode','','');document.getElementById('email').focus()}
+function setLoading(btnId,btnText,spinnerId,loading){var btn=document.getElementById(btnId);var text=document.getElementById(btnText);var sp=document.getElementById(spinnerId);btn.disabled=loading;sp.style.display=loading?'inline-block':'none';text.style.opacity=loading?'0':'1'}
 async function sendCode(){
-  const email=document.getElementById('email').value.trim();
-  if(!email){setMsg('msg1','请输入邮箱','err');return}
-  document.getElementById('sendBtn').disabled=true;
-  document.getElementById('sendBtn').textContent='发送中...';
+  var email=document.getElementById('email').value.trim();
+  if(!email||email.indexOf('@')<0){setMsg('msgEmail','请输入有效的邮箱地址','err');return}
+  setLoading('sendBtn','sendBtnText','sendSpinner',true);
   try{
-    const r=await fetch('/login/send-code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
-    const d=await r.json();
-    if(r.ok){sentEmail=email;document.getElementById('step1').style.display='none';document.getElementById('step2').classList.add('show');setMsg('msg2','验证码已发送（控制台可查看）','ok');countdown=60;updateCountdown()}
-    else{setMsg('msg1',d.detail||'发送失败','err');document.getElementById('sendBtn').disabled=false;document.getElementById('sendBtn').textContent='获取验证码'}
-  }catch(e){setMsg('msg1','网络错误','err');document.getElementById('sendBtn').disabled=false;document.getElementById('sendBtn').textContent='获取验证码'}
+    var r=await fetch('/login/send-code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email})});
+    var d=await r.json();
+    if(r.ok){
+      sentEmail=email;document.getElementById('sentEmailDisplay').textContent=email;
+      showStep('code');setMsg('msgEmail','','');setLoading('sendBtn','sendBtnText','sendSpinner',false);
+      countdown=60;updateCountdown;updateResend();focusCode(0);
+    }else{
+      setMsg('msgEmail',d.detail||'发送失败','err');setLoading('sendBtn','sendBtnText','sendSpinner',false)
+    }
+  }catch(e){setMsg('msgEmail','网络错误，请重试','err');setLoading('sendBtn','sendBtnText','sendSpinner',false)}
 }
-function updateCountdown(){
-  if(countdown<=0){document.getElementById('sendBtn').disabled=false;document.getElementById('sendBtn').textContent='重新发送';return}
-  document.getElementById('sendBtn').textContent=countdown+'s';countdown--;setTimeout(updateCountdown,1000);
+function updateResend(){
+  var btn=document.getElementById('resendBtn');
+  if(countdown<=0){btn.disabled=false;btn.textContent='重新发送';return}
+  btn.disabled=true;btn.textContent='重新发送 ('+countdown+'s)';countdown--;
+  timers.push(setTimeout(updateResend,1000))
 }
 async function verifyLogin(){
-  const code=document.getElementById('code').value.trim();
-  if(!code||code.length!==6){setMsg('msg2','请输入6位验证码','err');return}
-  document.getElementById('loginBtn').disabled=true;document.getElementById('loginBtn').textContent='验证中...';
+  var code=getCode();
+  if(code.length!==6){setMsg('msgCode','请输入完整的6位验证码','err');return}
+  setLoading('loginBtn','loginBtnText','loginSpinner',true);
   try{
-    const r=await fetch('/login/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:sentEmail,code})});
+    var r=await fetch('/login/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:sentEmail,code:code})});
     if(r.ok){window.location.href='/chat'}
-    else{const d=await r.json();setMsg('msg2',d.detail||'验证失败','err');document.getElementById('loginBtn').disabled=false;document.getElementById('loginBtn').textContent='登录'}
-  }catch(e){setMsg('msg2','网络错误','err');document.getElementById('loginBtn').disabled=false;document.getElementById('loginBtn').textContent='登录'}
+    else{var d=await r.json();setMsg('msgCode',d.detail||'验证失败，请重试','err');setLoading('loginBtn','loginBtnText','loginSpinner',false)}
+  }catch(e){setMsg('msgCode','网络错误，请重试','err');setLoading('loginBtn','loginBtnText','loginSpinner',false)}
 }
 </script>
 </body>
@@ -191,13 +284,11 @@ def logout():
 @app.get("/")
 def root(request: Request):
     token = request.cookies.get("session_token")
-    logged_in = False
     if token:
         valid, _, _ = validate_session(token)
         if valid:
-            logged_in = True
-    chat_link = '<a href="/chat" style="color:#2563eb">💬 进入聊天</a>' if logged_in else '<a href="/login" style="color:#2563eb">🔐 登录</a>'
-    return HTMLResponse(f'<html><body style="font-family:sans-serif;text-align:center;padding-top:80px;background:#f5f5f7;color:#1c1c1e"><h1>📋 公司知识助手</h1><p>{chat_link} | <a href="/docs" style="color:#2563eb">📖 API 文档</a></p></body></html>')
+            return RedirectResponse("/chat", 302)
+    return HTMLResponse(LOGIN_PAGE)
 
 
 @app.get("/chat", response_class=HTMLResponse)
@@ -258,6 +349,11 @@ def api_get_messages(conv_id: int, request: Request):
     return msgs
 
 
+def _strip_html(text: str) -> str:
+    import re
+    return re.sub(r'<[^>]+>', '', text)
+
+
 class ChatRequest(BaseModel):
     question: str
     conversation_id: int | None = None
@@ -276,16 +372,20 @@ async def api_chat(req: ChatRequest, request: Request):
         conv_id = create_conversation(uid, title)
 
     save_message(conv_id, "user", question)
-    result = ask(question)
+
+    history_msgs = get_conversation_messages(conv_id)
+    history = [{"role": m["role"], "content": _strip_html(m["content"])} for m in history_msgs[:-1]]
+    result = ask(question, conversation_history=history if history else None)
 
     sources = result.get("sources", [])
     stored_content = result["answer"]
     if sources:
         src_items = ""
         for i, s in enumerate(sources, 1):
+            rerank_info = f" | rerank={s['rerank_score']:.3f}" if s.get("rerank_score") else ""
             src_items += (
                 f'<div class="source-item">'
-                f'<div class="source-item-title">来源 {i}: {html.escape(s["title"])} (chunk #{s["chunk_index"]})</div>'
+                f'<div class="source-item-title">来源 {i}: {html.escape(s["title"])} (chunk #{s["chunk_index"]}{rerank_info})</div>'
                 f'<div class="source-item-text">{html.escape(s["content"])}</div>'
                 f'</div>'
             )
@@ -303,7 +403,109 @@ async def api_chat(req: ChatRequest, request: Request):
         "has_kb": result.get("has_kb", False),
         "latency_ms": result.get("latency_ms", 0),
         "tokens_used": result.get("tokens_used", 0),
+        "self_check_score": result.get("self_check_score"),
     }
+
+
+@app.post("/api/chat/stream")
+async def api_chat_stream(req: ChatRequest, request: Request):
+    uid = _get_user_id(request)
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(400, "问题不能为空")
+
+    conv_id = req.conversation_id
+    if conv_id is None:
+        title = question[:30] + ("..." if len(question) > 30 else "")
+        conv_id = create_conversation(uid, title)
+
+    save_message(conv_id, "user", question)
+
+    history_msgs = get_conversation_messages(conv_id)
+    history = [{"role": m["role"], "content": _strip_html(m["content"])} for m in history_msgs[:-1]]
+
+    def generate():
+        full_answer = ""
+        sources = []
+        try:
+            for line in ask_stream(question, conversation_history=history if history else None):
+                try:
+                    event = json.loads(line)
+                    if event["type"] == "sources":
+                        sources = event["data"]
+                    elif event["type"] == "token":
+                        full_answer += event["data"]
+                    yield f"data: {line}"
+                except json.JSONDecodeError:
+                    yield f"data: {line}"
+
+            stored = full_answer
+            if sources:
+                src_items = ""
+                for i, s in enumerate(sources, 1):
+                    rerank_info = f" | rerank={s['rerank_score']:.3f}" if s.get("rerank_score") else ""
+                    src_items += (
+                        f'<div class="source-item">'
+                        f'<div class="source-item-title">来源 {i}: {html.escape(s["title"])} (chunk #{s["chunk_index"]}{rerank_info})</div>'
+                        f'<div class="source-item-text">{html.escape(s["content"])}</div>'
+                        f'</div>'
+                    )
+                stored += (
+                    f'\n\n<details class="msg-sources">'
+                    f'<summary>📚 检索到的知识来源 (Top-{len(sources)})</summary>'
+                    f'{src_items}</details>'
+                )
+            save_message(conv_id, "assistant", stored)
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'data': str(e)})}\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/api/kb/list")
+def api_kb_list(request: Request):
+    _get_user_id(request)
+    docs = list_documents()
+    for d in docs:
+        d["modified"] = datetime.fromtimestamp(d["modified"]).strftime("%Y-%m-%dT%H:%M:%S")
+    return docs
+
+
+@app.post("/api/kb/upload")
+async def api_kb_upload(request: Request, file: UploadFile = File(...)):
+    _get_user_id(request)
+    if not file.filename:
+        raise HTTPException(400, "未选择文件")
+    content = await file.read()
+    result = upload_document(content, file.filename)
+    return JSONResponse(result)
+
+
+@app.delete("/api/kb/delete")
+async def api_kb_delete(request: Request):
+    body = await request.json()
+    filename = body.get("filename", "").strip()
+    if not filename:
+        raise HTTPException(400, "文件名不能为空")
+    ok = delete_document(filename)
+    if not ok:
+        raise HTTPException(404, f"文件不存在: {filename}")
+    return {"ok": True}
+
+
+@app.post("/api/kb/rebuild")
+def api_kb_rebuild(request: Request):
+    _get_user_id(request)
+    result = rebuild_index()
+    return JSONResponse(result)
+
+
+@app.get("/kb", response_class=HTMLResponse)
+def kb_page():
+    fp = os.path.join(BASE_DIR, "static", "kb.html")
+    if os.path.exists(fp):
+        return FileResponse(fp)
+    return HTMLResponse("<h1>知识库管理页面加载失败</h1>", 500)
 
 
 if __name__ == "__main__":

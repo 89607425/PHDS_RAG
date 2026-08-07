@@ -1,9 +1,8 @@
 import os
-import base64
 import email
+import fitz
 from docx import Document
 from pathlib import Path
-from PyPDF2 import PdfReader
 from bs4 import BeautifulSoup
 
 def load_docx(file_path: str) -> dict:
@@ -33,12 +32,13 @@ def load_docx(file_path: str) -> dict:
     }
 
 def load_pdf(file_path: str) -> dict:
-    reader = PdfReader(file_path)
+    doc = fitz.open(file_path)
     pages = []
-    for page in reader.pages:
-        text = page.extract_text()
+    for page in doc:
+        text = page.get_text()
         if text and text.strip():
             pages.append(text.strip())
+    doc.close()
 
     file_name = Path(file_path).stem
     full_text = "\n\n".join(pages)
