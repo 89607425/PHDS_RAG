@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <strong>企业级 RAG 知识库问答系统</strong><br>
+  <strong>业务 Wiki RAG 智能问答系统</strong><br>
   零 GPU成本 · 混合检索 · 多轮对话 · 自检验证 · 知识库管理
 </p>
 
