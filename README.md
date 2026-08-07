@@ -1,4 +1,4 @@
-# Company-RAG
+# PHDS-RAG
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python">
@@ -11,7 +11,7 @@
 
 <p align="center">
   <strong>企业级 RAG 知识库问答系统</strong><br>
-  零 GPU · 全 API 调用 · 混合检索 · 流式输出 · 多轮对话 · 自检验证 · 知识库管理 UI
+  零 GPU成本 · 混合检索 · 多轮对话 · 自检验证 · 知识库管理
 </p>
 
 ---
@@ -22,67 +22,8 @@
 
 本系统采用**混合检索 + 重排序（Hybrid Retrieval + Reranker）** 的增强型 RAG 架构，分为**离线索引**和**在线推理**两条链路：
 
-```
-                        ┌── 离线索引链路 ──┐
-                        │                  │
-┌──────────┐  ┌──────────┐  ┌──────────────┐  ┌───────────┐  ┌──────────┐
-│  .docx   │  │ 文档解析   │  │  Recursive   │  │ 硅基流动   │  │ ChromaDB │
-│  .pdf    │─▶│ py-docx  │─▶│  Character   │─▶│ BGE-large │─▶│ + BM25   │
-│  .doc    │  │  PyMuPDF  │  │  TextSplitter│  │ -zh-v1.5  │  │ 索引     │
-└──────────┘  └──────────┘  └──────────────┘  └───────────┘  └──────────┘
+![整体架构](P1.png)
 
-                        ┌── 在线推理链路 ──┐
-                        │                  │
-┌──────────┐  ┌──────────┐  ┌──────────────┐  ┌───────────┐  ┌───────────┐
-│ 用户问题   │─▶│ Query    │─▶│ 混合检索      │─▶│ BGE-      │─▶│ 流式生成   │
-│          │  │ 改写 +   │  │ BM25 + 向量  │  │ Reranker  │  │ + Self-  │
-│          │  │ Condense │  │ → RRF 融合   │  │ v2-m3     │  │ Check    │
-└──────────┘  └──────────┘  └──────────────┘  └───────────┘  └───────────┘
-```
-
-### 完整的 RAG 管线
-
-一条用户提问的**完整处理链路**（共 7 步）：
-
-```
-用户: "客单价怎么算？"
-  │
-  ▼
-Step 1 — 多轮 Condense（如有历史对话）
-  将依赖上下文的问题压缩为独立查询
-  │
-  ▼
-Step 2 — Query Rewriting（查询改写）
-  LLM 将模糊问题改写为精确检索词
-  例: "环比" → "环比率/环比差值"
-  │
-  ▼
-Step 3 — 混合检索 Hybrid Retrieval
-  ┌─────────────────────────────────┐
-  │ BM25 (关键词匹配)               │  并行检索
-  │ + ChromaDB 向量检索 (语义匹配)   │
-  │ → Reciprocal Rank Fusion (RRF)  │  两路融合
-  │ → 初排 Top-20                   │
-  └─────────────────────────────────┘
-  │
-  ▼
-Step 4 — Cross-Encoder Reranker（精排）
-  BGE-Reranker-v2-m3 逐对计算查询-文档相关性
-  → Top-5 最优文档
-  │
-  ▼
-Step 5 — Context 拼接 + LLM 生成
-  System Prompt 约束 → DeepSeek deepseek-chat 流式生成
-  │
-  ▼
-Step 6 — Self-Check（事实自检）
-  LLM-as-Judge 逐条核查回答是否能在文档中找到依据
-  置信度 < 0.7 → 返回"资料不足，无法确认"
-  │
-  ▼
-Step 7 — SSE 流式返回前端
-  tokens 逐字渲染 + 检索来源折叠展示
-```
 
 | 层级 | 职责 | 技术选型 | 设计决策 |
 |------|------|----------|----------|
@@ -111,14 +52,6 @@ RecursiveCharacterTextSplitter(
 )
 ```
 
-#### 参数设计理由
-
-| 参数 | 值 | 设计理由 |
-|------|-----|----------|
-| `chunk_size` | 400 | 中文语义完整单元通常 200-500 字；BGE-large-zh 最佳上下文窗口 512 tokens |
-| `chunk_overlap` | 60 | 15% 重叠率，防止关键句被切断在 chunk 边界 |
-| 分隔符优先级 | 段落 → 句子 → 字符 | 优先在自然语义边界切分，保证每个 chunk 可独立理解 |
-
 #### Chunk 元数据
 
 ```python
@@ -133,57 +66,17 @@ RecursiveCharacterTextSplitter(
 }
 ```
 
-### 混合检索设计（核心优化）
-
-#### 为什么选择混合检索？
-
-纯向量检索面对**专业术语缩写、数字精确匹配、低频关键词**时存在天然劣势。混合检索通过 BM25 关键词匹配与向量语义匹配互补，显著提升召回覆盖面。
+### 混合检索设计
 
 #### 检索流程
 
-```
-用户问题（经 Query Rewriting 后）
-       │
-       ├──────────────────────────────┐
-       ▼                              ▼
-┌──────────────────┐       ┌──────────────────┐
-│  ChromaDB 向量检索 │       │  BM25 关键词检索   │
-│  cosine 相似度    │       │  中文分词 + TF-IDF │
-│  k = 20          │       │  k = 20          │
-└──────────────────┘       └──────────────────┘
-       │                              │
-       └──────────┬───────────────────┘
-                  ▼
-┌─────────────────────────────────────┐
-│  Reciprocal Rank Fusion (RRF)       │
-│  score(doc_id) = Σ 1/(k + rank + 1) │
-│  k = 60                             │
-│  → 自动消除两路分数量纲差异          │
-│  → 两路都命中的文档获得加权提升       │
-└─────────────────────────────────────┘
-                  │
-                  ▼
-         Top-N 融合结果 (约 25-40 篇)
-                  │
-                  ▼
-┌─────────────────────────────────────┐
-│  BGE-Reranker-v2-m3 (Cross-Encoder) │
-│  POST https://api.siliconflow.cn    │
-│       /v1/rerank                   │
-│                                     │
-│  对每个 (query, doc) 逐对计算        │
-│  relevance_score，取 Top-5         │
-└─────────────────────────────────────┘
-                  │
-                  ▼
-              Top-5 最佳文档 → Prompt 拼接
-```
+![检索流程](P2.png)
 
 #### RRF 融合原理
 
-$$
-\text{RRF\_score}(d) = \sum_{r \in R} \frac{1}{k + \text{rank}_r(d) + 1}
-$$
+```
+RRF_score(d) = Σ 1 / (k + rank_r(d) + 1)  for each r ∈ R
+```
 
 - $R$：所有检索结果列表的集合
 - $\text{rank}_r(d)$：文档 $d$ 在结果列表 $r$ 中的排名（从 0 开始）
@@ -193,21 +86,6 @@ RRF 的优势：
 - 无需归一化两路检索的分数（BM25 分数和 cosine 距离量纲完全不同）
 - 多路共同命中自动获得更高权重
 - 对任意路数均可扩展
-
-#### BM25 中文分词
-
-```python
-def _tokenize(text: str) -> list[str]:
-    import re
-    tokens = []
-    for token in re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+|[^\s]', text):
-        token = token.strip()
-        if token:
-            tokens.append(token.lower())
-    return tokens
-```
-
-基于正则的轻量分词：中文连续字符为单元，英文字母数字连续为单元，兼顾效率和中文匹配效果。
 
 ### Reranker 设计
 
@@ -296,38 +174,6 @@ SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中�
 - **score ≥ 0.7**：通过，正常返回回答
 - **score < 0.7**：拒绝，返回 `"抱歉，资料不足，我无法确认该问题的准确答案。现有文档中没有找到足够的依据来回答您的问题，建议查阅原始文档或联系相关同事确认。"`
 
-这是一种轻量级的幻觉控制策略：不需要训练额外模型，利用同一 LLM 做"法官"角色交叉验证。
-
-### 流式输出设计
-
-```
-服务端 (FastAPI)                    前端 (SPA)
-     │                                  │
-     │ POST /api/chat/stream            │
-     │<─────────────────────────────────│
-     │                                  │
-     │ SSE: data: {"type":"sources",    │
-     │   "data":[...]}                 │ ─▶ 解析来源列表
-     │                                  │
-     │ SSE: data: {"type":"token",      │
-     │   "data":"客"}                  │ ─▶ 逐字追加到气泡
-     │ SSE: data: {"type":"token",      │
-     │   "data":"单"}                  │ ─▶ textContent += "单"
-     │ SSE: data: {"type":"token",      │
-     │   "data":"价"}                  │ ─▶ textContent += "价"
-     │ ...                              │
-     │                                  │
-     │ SSE: data: {"type":"self_check", │
-     │   "data":{"score":0.95}}        │
-     │                                  │
-     │ SSE: data: {"type":"done"}       │ ─▶ 追加来源折叠框
-```
-
-- 使用 **Server-Sent Events (SSE)** 协议
-- 服务端 `StreamingResponse` + DeepSeek `streaming=True`
-- 前端 `ReadableStream` + `TextDecoder` 逐行解析
-- 事件类型：`sources`（检索来源）、`token`（生成词元）、`self_check`（自检分数）、`done`（结束）
-
 ### Embedding 设计
 
 | 维度 | 选择 | 说明 |
@@ -346,27 +192,18 @@ SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中�
 | `.pdf` | **PyMuPDF (fitz)** | 逐页提取、空页过滤、页间双换行拼接。替换 PyPDF2 以提升中文 PDF 解析质量 |
 | `.doc` (MIME) | email + BeautifulSoup | 旧版 Word MIME HTML 封装，解析 `text/html` 部分后提取纯文本 |
 
-**PyMuPDF vs PyPDF2**：
-- PyMuPDF 对中文 PDF 的文字提取更完整，尤其是含表格、混合排版的文档
-- 支持更多 PDF 特性（加密、压缩流、CJK 字体）
-- 速度更快、内存占用更低
 
 ---
 
 ## 功能特性
 
 - **零 GPU 依赖** — 全 API 调用（硅基流动 Embedding + Reranker + DeepSeek LLM），普通 CPU 服务器即可
-- **中文深度优化** — BGE-large-zh-v1.5（1024 维）+ BGE-Reranker-v2-m3 + DeepSeek-chat
 - **混合检索** — BM25 + 向量双路召回 → RRF 融合 → Cross-Encoder 精排
 - **Query 改写** — LLM 自动将模糊口语化问题转为精确检索查询
 - **多轮 Condense** — 对话上下文压缩，支持多轮追问
 - **Self-Check** — LLM-as-Judge 事实自检，低置信度自动拒答
 - **流式输出** — SSE 协议，逐字渲染，首 token 可见时间 < 2s
-- **多格式文档** — `.docx`（含表格）、`.pdf`（PyMuPDF）、旧版 `.doc`（MIME HTML）
-- **邮箱验证码登录** — SMTP 真实邮件发送，24h Session 免重复登录
-- **对话历史管理** — 完整 CRUD，MySQL 持久化，级联删除
 - **知识库管理 UI** — 文档上传、删除、列表查看、一键重建索引，无需命令行
-- **ChatGPT 风格 SPA** — 原生 HTML/CSS/JS 单页应用，响应式布局
 - **来源可追溯** — 每轮回答附带 Top-5 检索片段（含 rerank_score），HTML 折叠展开
 - **RESTful API** — FastAPI + Swagger 文档（`/docs`）
 
