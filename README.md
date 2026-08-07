@@ -272,95 +272,6 @@ python build_index.py
 ```bash
 python app.py
 ```
-
-| 地址 | 说明 |
-|------|------|
-| `http://localhost:7860` | 导航页 |
-| `http://localhost:7860/chat` | SPA 聊天界面 |
-| `http://localhost:7860/kb` | 知识库管理界面 |
-| `http://localhost:7860/login` | 邮箱验证码登录 |
-| `http://localhost:7860/docs` | Swagger API 文档 |
-
----
-
-## API 接口
-
-所有 `/api/*` 和 Web 页面接口需要 `session_token` Cookie（登录后自动下发）。
-
-### 登录
-
-| 方法 | 接口 | 说明 |
-|------|------|------|
-| `POST` | `/login/send-code` | 发送邮箱验证码 `{"email":"..."}` |
-| `POST` | `/login/verify` | 验证码登录 `{"email":"...","code":"123456"}` |
-| `GET` | `/logout` | 退出登录 |
-
-### RAG 问答
-
-**POST /api/chat** — 非流式问答
-
-```bash
-curl -X POST http://localhost:7860/api/chat \
-  -H "Content-Type: application/json" \
-  -b "session_token=YOUR_TOKEN" \
-  -d '{"question": "客单价怎么计算？"}'
-```
-
-响应：
-```json
-{
-  "conversation_id": 1,
-  "answer": "客单价 = 销售金额 / 来客数...",
-  "sources": [
-    {"title": "客单价", "content": "...", "chunk_index": 3, "rerank_score": 0.956}
-  ],
-  "has_kb": true,
-  "latency_ms": 3302,
-  "tokens_used": 850,
-  "rewritten_query": "客单价的计算公式是什么？",
-  "self_check_score": 0.95
-}
-```
-
-**POST /api/chat/stream** — 流式问答（SSE）
-
-```bash
-curl -X POST http://localhost:7860/api/chat/stream \
-  -H "Content-Type: application/json" \
-  -b "session_token=YOUR_TOKEN" \
-  -d '{"question": "库存周转怎么算？"}'
-```
-
-SSE 事件流：
-```
-data: {"type":"sources","data":[...]}
-data: {"type":"token","data":"库"}
-data: {"type":"token","data":"存"}
-data: {"type":"token","data":"周"}
-...
-data: {"type":"self_check","data":{"score":1.0,"reason":"..."}}
-data: {"type":"done","data":{}}
-```
-
-### 对话管理
-
-| 方法 | 接口 | 说明 |
-|------|------|------|
-| `GET` | `/api/me` | 当前用户信息 |
-| `GET` | `/api/conversations` | 列出所有对话 |
-| `POST` | `/api/conversations` | 创建新对话 `{"title":"..."}` |
-| `DELETE` | `/api/conversations/{id}` | 删除对话（级联删除消息） |
-| `GET` | `/api/conversations/{id}/messages` | 获取对话消息 |
-
-### 知识库管理
-
-| 方法 | 接口 | 说明 |
-|------|------|------|
-| `GET` | `/api/kb/list` | 列出所有文档（名称/类型/大小/日期） |
-| `POST` | `/api/kb/upload` | 上传文档（multipart form `file` 字段） |
-| `DELETE` | `/api/kb/delete` | 删除文档 `{"filename":"..."}` |
-| `POST` | `/api/kb/rebuild` | 重建索引（解析→分块→向量化→BM25） |
-
 ---
 
 ## 项目结构
@@ -387,20 +298,6 @@ company-rag/
 ├── chroma_db/              # ChromaDB 向量数据（gitignore）
 └── bm25_index.pkl          # BM25 稀疏索引（gitignore）
 ```
-
----
-
-## 数据库设计
-
-MySQL `company_rag` 库，`utf8mb4` + `InnoDB`：
-
-| 表名 | 核心字段 | 说明 |
-|------|----------|------|
-| `users` | id, email (UNIQUE), created_at | 注册用户 |
-| `verification_codes` | email, code, expires_at, used | 限时 5 分钟、一次性 |
-| `sessions` | token (UNIQUE), user_id, email, expires_at | 24 小时有效、httponly Cookie |
-| `conversations` | id, user_id (FK), title, created_at | 用户对话分组 |
-| `messages` | id, conversation_id (FK CASCADE), role, content, created_at | user/assistant 消息 |
 
 ---
 
