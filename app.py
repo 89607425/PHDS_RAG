@@ -1,4 +1,5 @@
 """公司知识助手 — FastAPI + 邮箱验证码登录 + MySQL 持久化 + SPA 前端"""
+import html
 import json
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
@@ -276,7 +277,24 @@ async def api_chat(req: ChatRequest, request: Request):
 
     save_message(conv_id, "user", question)
     result = ask(question)
-    save_message(conv_id, "assistant", result["answer"])
+
+    sources = result.get("sources", [])
+    stored_content = result["answer"]
+    if sources:
+        src_items = ""
+        for i, s in enumerate(sources, 1):
+            src_items += (
+                f'<div class="source-item">'
+                f'<div class="source-item-title">来源 {i}: {html.escape(s["title"])} (chunk #{s["chunk_index"]})</div>'
+                f'<div class="source-item-text">{html.escape(s["content"])}</div>'
+                f'</div>'
+            )
+        stored_content += (
+            f'\n\n<details class="msg-sources">'
+            f'<summary>📚 检索到的知识来源 (Top-{len(sources)})</summary>'
+            f'{src_items}</details>'
+        )
+    save_message(conv_id, "assistant", stored_content)
 
     return {
         "conversation_id": conv_id,

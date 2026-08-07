@@ -9,30 +9,30 @@
 </p>
 
 <p align="center">
-  <strong>Enterprise RAG Knowledge Q&A System</strong><br>
-  Zero-GPU · Full API Stack · Email Auth · Conversation Persistence · SPA Frontend
+  <strong>企业级 RAG 知识库问答系统</strong><br>
+  零 GPU · 全 API 调用 · 邮箱验证码登录 · 对话持久化 · SPA 前端
 </p>
 
 ---
 
-## Architecture
+## 系统架构
 
 ```
 ┌──────────────┐    ┌──────────────┐    ┌─────────────────┐
-│  .docx/.pdf   │───▶│  Chunker     │───▶│  SiliconFlow    │
+│  .docx/.pdf   │───▶│  文本分块     │───▶│  硅基流动        │
 │  .doc/MIME   │    │  (LangChain) │    │  BGE-large-zh   │
 └──────────────┘    └──────────────┘    └────────┬────────┘
                                                  │
                     ┌────────────────────────────▼─────────────────────────────┐
                     │                      ChromaDB                             │
-                    │                 (Persistent Vector Store)                  │
+                    │                  （本地持久化向量库）                        │
                     └────────────────────────────┬─────────────────────────────┘
                                                  │
 ┌──────────────┐    ┌────────────────────────────▼─────────────────────────────┐
-│   SPA Chat   │◀──▶│  FastAPI Server                                           │
+│  SPA 聊天界面  │◀──▶│  FastAPI 服务                                              │
 │  (HTML/CSS/  │    │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────┐ │
-│   JS)        │    │  │  Auth    │  │  RAG     │  │  Conv    │  │  Eval     │ │
-│              │    │  │  SMTP    │  │  Chain   │  │  CRUD    │  │  Metrics  │ │
+│   JS)        │    │  │  邮箱认证  │  │  RAG     │  │  对话    │  │  效果评估  │ │
+│              │    │  │  SMTP    │  │  核心链路  │  │  增删改查  │  │  指标分析  │ │
 └──────────────┘    │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └─────┬─────┘ │
                     │       │             │             │               │        │
                     └───────┼─────────────┼─────────────┼───────────────┼────────┘
@@ -44,45 +44,45 @@
                     └────────────────────────────────────────────────────────────┘
 ```
 
-| Layer | Technology |
-|-------|-----------|
-| Document Parsing | python-docx, PyMuPDF, email MIME parser |
-| Chunking | LangChain `RecursiveCharacterTextSplitter` |
-| Embedding | SiliconFlow API · `BAAI/bge-large-zh-v1.5` |
-| Vector Store | ChromaDB (local persistent) |
-| LLM | DeepSeek API · `deepseek-chat` |
-| Web Framework | FastAPI + Uvicorn |
-| Frontend | Vanilla SPA (HTML/CSS/JS) — ChatGPT-style UI |
-| Database | MySQL 8.0 + PyMySQL |
-| Auth | Email verification code (SMTP) + session cookie |
+| 环节 | 技术选型 |
+|------|----------|
+| 文档解析 | python-docx、PyMuPDF、MIME 邮件解析 |
+| 文本分块 | LangChain `RecursiveCharacterTextSplitter` |
+| 向量化 | 硅基流动 API · `BAAI/bge-large-zh-v1.5` |
+| 向量数据库 | ChromaDB（本地持久化） |
+| 大语言模型 | DeepSeek API · `deepseek-chat` |
+| Web 框架 | FastAPI + Uvicorn |
+| 前端界面 | 原生 SPA（HTML/CSS/JS）—— ChatGPT 风格 |
+| 数据库 | MySQL 8.0 + PyMySQL |
+| 用户认证 | 邮箱验证码 + Session Cookie |
 
 ---
 
-## Features
+## 功能特性
 
-- **Zero GPU** — Fully API-driven, runs on commodity CPU
-- **Chinese Optimized** — BGE-large-zh embeddings + DeepSeek Chinese LLM
-- **Multi-format Documents** — `.docx`, `.pdf`, and legacy `.doc` (MIME HTML) files
-- **Email Login** — SMTP verification codes, 24h session persistence
-- **Conversation History** — Full CRUD persisted to MySQL, visible in Navicat
-- **Beautiful SPA** — ChatGPT-inspired responsive chat interface
-- **Source Citations** — Every answer includes Top-5 retrieved document fragments
-- **Built-in Evaluation** — Hit Rate@5, MRR, Faithfulness, Answer Relevancy via LLM-as-Judge
-- **RESTful API** — Full Swagger docs at `/docs`
+- **零 GPU 依赖** — 全 API 调用，普通 CPU 服务器即可运行
+- **中文深度优化** — BGE-large-zh 向量模型 + DeepSeek 中文大模型
+- **多格式文档支持** — `.docx`、`.pdf`、以及旧版 `.doc`（MIME HTML）文件
+- **邮箱验证码登录** — SMTP 发送验证码，24 小时免重复登录
+- **对话历史管理** — 完整增删改查，MySQL 持久化，Navicat 可直接查看
+- **精美 SPA 前端** — ChatGPT 风格聊天界面，支持移动端
+- **来源可追溯** — 每轮回答附带 Top-5 检索片段，可展开查看
+- **内置评估体系** — Hit Rate@5、MRR、Faithfulness、Answer Relevancy（LLM-as-Judge）
+- **RESTful API** — Swagger 文档地址 `/docs`
 
 ---
 
-## Quick Start
+## 快速开始
 
-### Prerequisites
+### 环境要求
 
 - Python 3.11+
-- MySQL 8.0+ running on `localhost:3306`
-- [SiliconFlow API Key](https://siliconflow.cn)
+- MySQL 8.0+（本地 `localhost:3306`）
+- [硅基流动 API Key](https://siliconflow.cn)
 - [DeepSeek API Key](https://platform.deepseek.com)
-- SMTP credentials (e.g. 163 mailbox with auth code enabled)
+- SMTP 邮箱账号（如 163 邮箱，需开启 SMTP 授权码）
 
-### 1. Install Dependencies
+### 1. 安装依赖
 
 ```bash
 conda create -n RAG python=3.11 -y
@@ -90,62 +90,62 @@ conda activate RAG
 pip install -r requirements.txt
 ```
 
-### 2. Configure Environment
+### 2. 配置环境变量
 
 ```bash
 cp .env.example .env
-# Edit .env with your API keys, MySQL credentials, and SMTP settings
+# 编辑 .env，填入 API Key、MySQL 密码、SMTP 配置
 ```
 
-Key environment variables:
+关键配置项：
 
-| Variable | Description |
-|----------|-------------|
-| `DEEPSEEK_API_KEY` | DeepSeek API key |
-| `SILICONFLOW_API_KEY` | SiliconFlow API key |
-| `DB_PASS` | MySQL root password |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | SMTP server config |
+| 变量 | 说明 |
+|------|------|
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 |
+| `SILICONFLOW_API_KEY` | 硅基流动 API 密钥 |
+| `DB_PASS` | MySQL 密码 |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | SMTP 邮件服务配置 |
 
-### 3. Initialize MySQL Schema
+### 3. 初始化数据库
 
-Tables are auto-created on first launch. You can also verify manually:
+首次启动自动建表，也可手动创建：
 
 ```sql
 CREATE DATABASE IF NOT EXISTS company_rag
   DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-### 4. Build Knowledge Base
+### 4. 构建知识库
 
-Place documents in `wiki_docs/`, then:
+将文档放入 `wiki_docs/` 目录，执行：
 
 ```bash
 python build_index.py
 ```
 
-### 5. Start Server
+### 5. 启动服务
 
 ```bash
 python app.py
 ```
 
-| URL | Description |
-|-----|-------------|
-| `http://localhost:7860` | Landing page |
-| `http://localhost:7860/login` | Email verification login |
-| `http://localhost:7860/chat` | SPA chat interface |
-| `http://localhost:7860/docs` | Swagger API docs |
+| 地址 | 说明 |
+|------|------|
+| `http://localhost:7860` | 导航页 |
+| `http://localhost:7860/login` | 邮箱验证码登录 |
+| `http://localhost:7860/chat` | SPA 聊天界面 |
+| `http://localhost:7860/docs` | Swagger API 文档 |
 
 ---
 
-## API Reference
+## API 接口
 
-### Authentication
+### 用户认证
 
-All `/api/*` and `/chat` endpoints require a valid `session_token` cookie obtained via login.
+所有 `/api/*` 和 `/chat` 接口需要携带登录后下发的 `session_token` Cookie。
 
 <details>
-<summary><b>POST /login/send-code</b> — Send verification code</summary>
+<summary><b>POST /login/send-code</b> —— 发送验证码</summary>
 
 ```bash
 curl -X POST http://localhost:7860/login/send-code \
@@ -157,30 +157,30 @@ curl -X POST http://localhost:7860/login/send-code \
 </details>
 
 <details>
-<summary><b>POST /login/verify</b> — Verify code & login</summary>
+<summary><b>POST /login/verify</b> —— 验证码登录</summary>
 
 ```bash
 curl -X POST http://localhost:7860/login/verify \
   -H "Content-Type: application/json" \
   -d '{"email": "user@company.com", "code": "123456"}'
 
-# Sets session_token cookie, returns {"ok": true}
+# 下发 session_token Cookie，返回 {"ok": true}
 ```
 </details>
 
 <details>
-<summary><b>GET /logout</b> — Logout</summary>
+<summary><b>GET /logout</b> —— 退出登录</summary>
 
 ```bash
 curl http://localhost:7860/logout
-# Clears session_token cookie, redirects to /login
+# 清除 session_token Cookie，跳转至 /login
 ```
 </details>
 
-### Knowledge Q&A
+### 知识问答
 
 <details>
-<summary><b>POST /api/chat</b> — Ask a question (RAG)</summary>
+<summary><b>POST /api/chat</b> —— RAG 问答</summary>
 
 ```bash
 curl -X POST http://localhost:7860/api/chat \
@@ -189,7 +189,7 @@ curl -X POST http://localhost:7860/api/chat \
   -d '{"question": "客单价怎么计算？"}'
 ```
 
-Response:
+响应：
 
 ```json
 {
@@ -204,11 +204,11 @@ Response:
 }
 ```
 
-If `conversation_id` is `null`, a new conversation is auto-created from the question.
+若 `conversation_id` 为 `null`，系统自动以问题摘要为标题创建新对话。
 </details>
 
 <details>
-<summary><b>GET /api/health</b> — Health check</summary>
+<summary><b>GET /api/health</b> —— 健康检查</summary>
 
 ```bash
 curl http://localhost:7860/api/health
@@ -216,85 +216,85 @@ curl http://localhost:7860/api/health
 ```
 </details>
 
-### Conversation Management
+### 对话管理
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/me` | Current user info |
-| `GET` | `/api/conversations` | List user's conversations |
-| `POST` | `/api/conversations` | Create new conversation |
-| `DELETE` | `/api/conversations/{id}` | Delete conversation |
-| `GET` | `/api/conversations/{id}/messages` | Get messages for a conversation |
+| 方法 | 接口 | 说明 |
+|------|------|------|
+| `GET` | `/api/me` | 当前用户信息 |
+| `GET` | `/api/conversations` | 列出用户所有对话 |
+| `POST` | `/api/conversations` | 创建新对话 |
+| `DELETE` | `/api/conversations/{id}` | 删除对话 |
+| `GET` | `/api/conversations/{id}/messages` | 获取对话消息列表 |
 
 ---
 
-## Evaluation
+## 效果评估
 
-The project includes a self-contained RAG evaluation framework.
+项目内置 RAG 评估框架，可量化系统表现：
 
 ```bash
 python evaluate.py
 ```
 
-Metrics:
+评估指标：
 
-| Metric | Description | Score |
-|--------|-------------|-------|
-| Hit Rate@5 | Ground truth doc appears in Top-5 retrieval | 100% |
-| MRR@5 | Mean Reciprocal Rank of correct doc | 0.836 |
-| Faithfulness | Answer grounded in retrieved context (LLM-as-Judge) | 0.87 |
-| Answer Relevancy | Answer directly addresses the question (LLM-as-Judge) | 0.83 |
+| 指标 | 说明 | 当前得分 |
+|------|------|---------|
+| Hit Rate@5 | 正确答案出现在 Top-5 检索结果中的比例 | 100% |
+| MRR@5 | 正确答案在检索结果中的平均倒数排名 | 0.836 |
+| Faithfulness | 回答是否忠于检索上下文（LLM 判定） | 0.87 |
+| Answer Relevancy | 回答是否紧扣问题（LLM 判定） | 0.83 |
 
-Extend `test_set.json` with more question-answer pairs to improve benchmark coverage.
+修改 `test_set.json` 补充更多问答对可提升基准覆盖面。
 
 ---
 
-## Project Structure
+## 项目结构
 
 ```
 company-rag/
-├── app.py                  # FastAPI server + auth middleware + API routes
-├── auth.py                 # Email verification + session management
-├── database.py             # MySQL connection pool + schema init
-├── build_index.py          # Offline document ingestion pipeline
-├── document_loader.py      # .docx / .pdf / .doc (MIME) parser
-├── chunker.py              # LangChain text splitter
-├── embeddings.py           # SiliconFlow embedding config
-├── vector_store.py         # ChromaDB vector store operations
-├── rag_chain.py            # Core RAG pipeline (retrieve → generate)
-├── evaluate.py             # RAG evaluation (Hit Rate, MRR, Faithfulness)
-├── test_set.json           # Evaluation test questions + ground truth
-├── requirements.txt        # Python dependencies
-├── .env.example            # Environment variable template
+├── app.py                  # FastAPI 主服务 + 认证中间件 + API 路由
+├── auth.py                 # 邮箱验证码 + Session 管理
+├── database.py             # MySQL 连接 + 自动建表
+├── build_index.py          # 离线文档入库脚本
+├── document_loader.py      # .docx / .pdf / .doc (MIME) 解析
+├── chunker.py              # LangChain 文本分块
+├── embeddings.py           # 硅基流动 Embedding 配置
+├── vector_store.py         # ChromaDB 向量库操作
+├── rag_chain.py            # RAG 核心链路（检索 → 生成）
+├── evaluate.py             # RAG 效果评估
+├── test_set.json           # 评估用测试集
+├── requirements.txt        # Python 依赖
+├── .env.example            # 环境变量模板
 ├── .gitignore
 ├── static/
-│   └── chat.html           # ChatGPT-style SPA frontend
-└── wiki_docs/              # Source documents (gitignored)
+│   └── chat.html           # ChatGPT 风格 SPA 前端
+└── wiki_docs/              # 源文档目录（gitignore）
     ├── 客单价.pdf
     ├── 核心指标概览.pdf
     ├── 实际毛利率.docx
     ├── 库存周转.docx
-    ├── ... (14 documents total)
+    ├── ...（共 14 篇文档）
 ```
 
 ---
 
-## Database Schema
+## 数据库结构
 
-5 tables in MySQL `company_rag` database:
+MySQL `company_rag` 库，共 5 张表：
 
-| Table | Description |
-|-------|-------------|
-| `users` | Registered users (email unique) |
-| `verification_codes` | Time-limited login codes (5 min expiry) |
-| `sessions` | Auth session tokens (24h expiry) |
-| `conversations` | Chat conversations per user |
-| `messages` | Messages within conversations (CASCADE delete) |
+| 表名 | 说明 |
+|------|------|
+| `users` | 注册用户（邮箱唯一） |
+| `verification_codes` | 限时验证码（5 分钟有效） |
+| `sessions` | 登录会话（24 小时有效） |
+| `conversations` | 用户对话记录 |
+| `messages` | 对话消息（级联删除） |
 
-All tables use `utf8mb4` charset with `InnoDB` engine.
+所有表采用 `utf8mb4` 字符集 + `InnoDB` 引擎。
 
 ---
 
-## License
+## 开源协议
 
 MIT

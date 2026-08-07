@@ -181,6 +181,7 @@ body {
 .welcome {
   max-width: 800px; margin: 0 auto; padding: 80px 24px; text-align: center;
 }
+.welcome.hidden { display:none }
 .welcome-icon {
   width: 56px; height: 56px; border-radius: 14px;
   background: linear-gradient(135deg, #fbbf77, #fdba74);
@@ -274,13 +275,12 @@ body {
     <span style="font-weight:600;font-size:15px">公司知识助手</span>
   </div>
   <div class="chat-area" id="chatArea">
-    <div class="messages" id="messages">
-      <div class="welcome" id="welcome">
-        <div class="welcome-icon">📋</div>
-        <h2>欢迎使用公司知识助手</h2>
-        <p>基于企业知识库的智能问答系统<br>支持客单价、库存周转、核心指标等业务模块查询</p>
-      </div>
+    <div class="welcome" id="welcome">
+      <div class="welcome-icon">📋</div>
+      <h2>欢迎使用公司知识助手</h2>
+      <p>基于企业知识库的智能问答系统<br>支持客单价、库存周转、核心指标等业务模块查询</p>
     </div>
+    <div class="messages" id="messages"></div>
   </div>
   <div class="input-area">
     <div class="input-wrapper">
@@ -402,38 +402,43 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+function hideWelcome() { $('#welcome').classList.add('hidden') }
+function showWelcome() { $('#welcome').classList.remove('hidden') }
+
 async function selectConversation(id, animate=true) {
   state.activeConvId = id;
   renderConversations();
-  $('#welcome').style.display = 'none';
+  hideWelcome();
   try {
     const msgs = await api(`/api/conversations/${id}/messages`);
     if (!msgs) return;
     renderMessages(msgs);
     if (!animate) scrollToBottom();
   } catch(e) {
-    renderMessages([]);
+    $('#messages').innerHTML = '';
+    showWelcome();
   }
 }
 
 function renderMessages(msgs) {
-  const el = $('#messages');
   if (!msgs || msgs.length === 0) {
-    el.innerHTML = '';
-    $('#welcome').style.display = 'block';
+    $('#messages').innerHTML = '';
+    showWelcome();
     return;
   }
-  el.innerHTML = msgs.map((m, i) => {
+  hideWelcome();
+  $('#messages').innerHTML = msgs.map((m) => {
     const role = m.role === 'user' ? 'user' : 'assistant';
     const name = role === 'user' ? state.userEmail.split('@')[0] || '你' : 'AI 助手';
     const avatar = role === 'user' ? '👤' : '📋';
     const roleClass = role === 'user' ? 'user' : 'assistant';
+    const bubbleHtml = role === 'assistant' ? m.content : escHtml(m.content);
     return `
       <div class="message ${roleClass}">
         <div class="msg-avatar ${roleClass}">${avatar}</div>
         <div class="msg-content">
           <div class="msg-role">${escHtml(name)}</div>
-          <div class="msg-bubble">${escHtml(m.content)}</div>
+          <div class="msg-bubble">${bubbleHtml}</div>
         </div>
       </div>
     `;
@@ -503,7 +508,7 @@ async function sendMessage() {
 
   input.value = '';
   input.style.height = 'auto';
-  $('#welcome').style.display = 'none';
+  hideWelcome();
 
   setLoading(true);
   addMessage('user', question);
@@ -538,10 +543,10 @@ function newConversation() {
   state.activeConvId = null;
   renderConversations();
   $('#messages').innerHTML = '';
-  $('#welcome').style.display = 'block';
+  showWelcome();
   $('#questionInput').value = '';
   $('#questionInput').focus();
-  toggleSidebar();
+  if (window.innerWidth <= 768) toggleSidebar();
 }
 
 async function deleteConversation(id) {
@@ -551,7 +556,7 @@ async function deleteConversation(id) {
     if (state.activeConvId === id) {
       state.activeConvId = null;
       $('#messages').innerHTML = '';
-      $('#welcome').style.display = 'block';
+      showWelcome();
     }
     await loadConversations();
     if (state.conversations.length > 0 && !state.activeConvId) {
