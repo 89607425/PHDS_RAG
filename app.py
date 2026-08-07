@@ -1,639 +1,291 @@
-"""RAG 知识问答前端 — Gradio + FastAPI
-
-本文件只在前端样式与布局上做了重构，RAG 检索逻辑位于 rag_chain.py，未做任何改动。
-"""
-import base64
-import gradio as gr
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+"""公司知识助手 — FastAPI + 邮箱验证码登录 + MySQL 持久化 + SPA 前端"""
+import json
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from datetime import datetime
+from starlette.middleware.base import BaseHTTPMiddleware
 from rag_chain import ask, _check_knowledge_base
+from database import init_db
+from auth import (
+    send_verification_code, verify_code, create_session, validate_session,
+    get_user_conversations, create_conversation, delete_conversation,
+    get_conversation_messages, save_message,
+)
 from dotenv import load_dotenv
 
 load_dotenv()
+init_db()
 
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ---------------------------------------------------------------------------
-# 内嵌 SVG 头像(避免外链失败),可直接用于 Chatbot(avatar_images=...)
-# ---------------------------------------------------------------------------
-def _svg_avatar(grad: tuple[str, str]) -> str:
-    svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-        '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
-        f'<stop offset="0%" stop-color="{grad[0]}"/>'
-        f'<stop offset="100%" stop-color="{grad[1]}"/>'
-        '</linearGradient></defs>'
-        '<rect width="32" height="32" rx="9" fill="url(#g)"/>'
-        '</svg>'
-    )
-    b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
-    return f"data:image/svg+xml;base64,{b64}"
-
-
-def _svg_user_avatar() -> str:
-    svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-        '<rect width="32" height="32" rx="9" fill="#ffffff" stroke="#e5e7eb" stroke-width="1"/>'
-        '<circle cx="16" cy="13" r="4.2" fill="#9ca3af"/>'
-        '<path d="M6 26c2.2-4.2 6-6.2 10-6.2s7.8 2 10 6.2" fill="#9ca3af"/>'
-        '</svg>'
-    )
-    b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
-    return f"data:image/svg+xml;base64,{b64}"
-
-
-BOT_AVATAR = _svg_avatar(("#fbbf77", "#fdba74"))   # 暖橙色渐变
-USER_AVATAR = _svg_user_avatar()                   # 白色描边、灰头像剪影
-
-
-# ---------------------------------------------------------------------------
-# 浅色主题样式 — 重点:不与 Gradio 6 的 flex 布局打架
-# ---------------------------------------------------------------------------
-CSS = """
-/* ===== 设计变量 ===== */
-:root {
-    --bg-page:        #f5f5f7;
-    --bg-sidebar:    #ffffff;
-    --bg-bubble-user:#e8f1fc;
-    --bg-card:        #ffffff;
-    --bg-hover:        #f1f3f7;
-    --bg-active:        #e8f1fc;
-    --border:        #e6e8ec;
-    --border-soft:    #eef0f3;
-    --text-primary:    #1c1c1e;
-    --text-secondary:#5f6470;
-    --text-muted:    #9aa0aa;
-    --accent:        #2563eb;
-    --accent-strong:#1d4ed8;
-    --accent-soft:    #d6e4ff;
-    --shadow-soft: 0 1px 2px rgba(20, 24, 35, 0.04);
-    --shadow-card: 0 1px 3px rgba(20, 24, 35, 0.06), 0 1px 2px rgba(20, 24, 35, 0.04);
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>公司知识助手 - 登录</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:#f5f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#fff;border-radius:16px;padding:40px 36px;width:380px;box-shadow:0 2px 12px rgba(20,24,35,0.06),0 1px 4px rgba(20,24,35,0.04)}
+.card h1{font-size:22px;color:#1c1c1e;text-align:center;margin-bottom:4px}
+.card .sub{font-size:13px;color:#9aa0aa;text-align:center;margin-bottom:28px}
+.card label{display:block;font-size:13px;color:#5f6470;margin-bottom:6px;font-weight:500}
+.card input[type=email],.card input[type=text]{width:100%;padding:10px 14px;border:1px solid #e6e8ec;border-radius:10px;font-size:15px;color:#1c1c1e;outline:none;transition:border-color .2s}
+.card input:focus{border-color:#2563eb}
+.card .row{display:flex;gap:10px}
+.card .row input{flex:1}
+.card button{border:none;border-radius:10px;padding:10px 20px;font-size:14px;cursor:pointer;font-weight:500;transition:background .2s,opacity .2s;white-space:nowrap}
+.card .btn-pri{background:#2563eb;color:#fff;width:100%;margin-top:20px}
+.card .btn-pri:hover{background:#1d4ed8}
+.card .btn-pri:disabled{opacity:0.5;cursor:not-allowed}
+.card .btn-sec{background:#f1f3f7;color:#2563eb}
+.card .btn-sec:hover{background:#e8f1fc}
+.card .msg{font-size:12px;margin-top:8px;text-align:center;min-height:18px}
+.card .msg.ok{color:#16a34a}
+.card .msg.err{color:#dc2626}
+.card .step2{display:none}
+.card .step2.show{display:block}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>📋 公司知识助手</h1>
+<div class="sub">请输入工作邮箱登录</div>
+<div id="step1">
+  <label>邮箱地址</label>
+  <div class="row">
+    <input type="email" id="email" placeholder="name@company.com" autocomplete="email">
+    <button class="btn-sec" onclick="sendCode()" id="sendBtn">获取验证码</button>
+  </div>
+  <div id="msg1" class="msg"></div>
+</div>
+<div id="step2" class="step2">
+  <label>验证码</label>
+  <input type="text" id="code" placeholder="6 位验证码" maxlength="6" autocomplete="one-time-code">
+  <button class="btn-pri" onclick="verifyLogin()" id="loginBtn">登录</button>
+  <div id="msg2" class="msg"></div>
+</div>
+</div>
+<script>
+let sentEmail='';let countdown=0;
+function setMsg(el,text,cls){document.getElementById(el).textContent=text;document.getElementById(el).className='msg '+cls}
+async function sendCode(){
+  const email=document.getElementById('email').value.trim();
+  if(!email){setMsg('msg1','请输入邮箱','err');return}
+  document.getElementById('sendBtn').disabled=true;
+  document.getElementById('sendBtn').textContent='发送中...';
+  try{
+    const r=await fetch('/login/send-code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+    const d=await r.json();
+    if(r.ok){sentEmail=email;document.getElementById('step1').style.display='none';document.getElementById('step2').classList.add('show');setMsg('msg2','验证码已发送（控制台可查看）','ok');countdown=60;updateCountdown()}
+    else{setMsg('msg1',d.detail||'发送失败','err');document.getElementById('sendBtn').disabled=false;document.getElementById('sendBtn').textContent='获取验证码'}
+  }catch(e){setMsg('msg1','网络错误','err');document.getElementById('sendBtn').disabled=false;document.getElementById('sendBtn').textContent='获取验证码'}
 }
-
-/* ===== 全局重置 ===== */
-html, body, .gradio-container, .gradio-container > .main,
-.gradio-container .wrap {
-    background: var(--bg-page) !important;
-    color: var(--text-primary) !important;
-    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
-                 "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue",
-                 Helvetica, Arial, sans-serif !important;
+function updateCountdown(){
+  if(countdown<=0){document.getElementById('sendBtn').disabled=false;document.getElementById('sendBtn').textContent='重新发送';return}
+  document.getElementById('sendBtn').textContent=countdown+'s';countdown--;setTimeout(updateCountdown,1000);
 }
-.gradio-container { max-width: 100% !important; padding: 0 !important; }
-footer, .gradio-footer { display: none !important; }
-
-/* ===== 顶层布局:整页铺满 ===== */
-.app-shell {
-    min-height: 100vh !important;
-    width: 100%;
-    background: var(--bg-page);
+async function verifyLogin(){
+  const code=document.getElementById('code').value.trim();
+  if(!code||code.length!==6){setMsg('msg2','请输入6位验证码','err');return}
+  document.getElementById('loginBtn').disabled=true;document.getElementById('loginBtn').textContent='验证中...';
+  try{
+    const r=await fetch('/login/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:sentEmail,code})});
+    if(r.ok){window.location.href='/chat'}
+    else{const d=await r.json();setMsg('msg2',d.detail||'验证失败','err');document.getElementById('loginBtn').disabled=false;document.getElementById('loginBtn').textContent='登录'}
+  }catch(e){setMsg('msg2','网络错误','err');document.getElementById('loginBtn').disabled=false;document.getElementById('loginBtn').textContent='登录'}
 }
-
-/* 让 Gradio 的 row(我用来做左右分栏)正确显示为 flex;列与列之间无空隙 */
-.app-row {
-    gap: 0 !important;
-    align-items: stretch !important;
-    background: var(--bg-page);
-}
-.app-row > .gradio-column,
-.app-row > [class*="column"] {
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-
-/* ===== 侧栏 ===== */
-.sidebar {
-    background: var(--bg-sidebar) !important;
-    border-right: 1px solid var(--border) !important;
-    padding: 16px 14px 14px 14px !important;
-    min-width: 260px !important;
-    width: 260px !important;
-}
-
-/* 侧栏内部 header(用 gr.HTML 渲染) */
-.sb-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 4px 6px 14px 6px;
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-.sb-header .title { display: flex; align-items: center; gap: 8px; }
-.sb-header .title-icon {
-    width: 22px; height: 22px;
-    border-radius: 6px;
-    background: linear-gradient(135deg, #fbbf77, #fdba74);
-    display: inline-flex; align-items: center; justify-content: center;
-    font-size: 12px;
-}
-.sb-header .toggle {
-    color: var(--text-muted); cursor: pointer; font-size: 16px;
-    padding: 4px 6px; border-radius: 6px;
-}
-.sb-header .toggle:hover { background: var(--bg-hover); }
-
-.sb-section-title {
-    font-size: 11px; color: var(--text-muted);
-    padding: 14px 8px 6px 8px;
-    letter-spacing: 0.4px; text-transform: uppercase;
-}
-
-/* === 侧栏按钮 === */
-.sidebar button.new-chat-btn,
-.new-chat-btn {
-    background: var(--bg-card) !important;
-    border: 1px solid var(--border) !important;
-    color: var(--accent) !important;
-    border-radius: 10px !important;
-    box-shadow: var(--shadow-soft) !important;
-}
-.new-chat-btn:hover { background: var(--bg-active) !important; }
-
-.sidebar .del-btn,
-.del-btn {
-    background: transparent !important;
-    border: 1px solid var(--border) !important;
-    color: var(--text-secondary) !important;
-    border-radius: 8px !important;
-    margin-top: 10px !important;
-}
-.del-btn:hover { background: var(--bg-hover) !important; color: #dc2626 !important; }
-
-/* === Radio 列表样式 === */
-.conv-scroll .block,
-.conv-scroll .gradio-radio {
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-.conv-scroll label {
-    padding: 9px 12px !important;
-    border-radius: 8px !important;
-    font-size: 13px !important;
-    color: var(--text-secondary) !important;
-    margin: 3px 0 !important;
-    transition: background .15s, color .15s;
-    width: 100% !important;
-}
-.conv-scroll label:hover { background: var(--bg-hover) !important; color: var(--text-primary) !important; }
-.conv-scroll input:checked + span,
-.conv-scroll .selected { color: var(--accent) !important; font-weight: 500 !important; }
-.conv-scroll li.selected label,
-.conv-scroll li:has(input:checked) label {
-    background: var(--bg-active) !important;
-    color: var(--accent) !important;
-}
-
-.sidebar-kb {
-    border-top: 1px solid var(--border-soft);
-    padding-top: 12px;
-    margin-top: 14px;
-    font-size: 11px; color: var(--text-muted);
-    line-height: 1.7;
-    padding-left: 6px;
-}
-.sidebar-kb .ok   { color: #16a34a; }
-.sidebar-kb .warn { color: #d97706; }
-
-/* ===== 聊天区 ===== */
-.chat-col {
-    background: var(--bg-page) !important;
-    padding: 0 !important;
-}
-.chat-topbar {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 24px 4px 24px;
-    color: var(--text-muted);
-}
-.chat-topbar .icon-btn {
-    width: 32px; height: 32px;
-    border-radius: 8px;
-    display: inline-flex; align-items: center; justify-content: center;
-    cursor: pointer; font-size: 16px;
-}
-.chat-topbar .icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-
-.chatbot-shell {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow: hidden;
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-}
-.chatbot-shell > .block,
-.chatbot-shell .wrap,
-.chatbot-shell .chatbot {
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-#chatbot, #chatbot .chatbot, #chatbot > div {
-    background: transparent !important;
-    border: none !important;
-}
-#chatbot .message,
-#chatbot .bubble-wrap,
-#chatbot .message-wrap,
-#chatbot .message-bubble,
-#chatbot [class*="message"],
-#chatbot [class*="bubble"] {
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-#chatbot img.avatar,
-#chatbot .avatar img,
-#chatbot .avatar-image img {
-    width: 32px !important; height: 32px !important;
-    border-radius: 9px !important; object-fit: cover !important;
-}
-#chatbot .avatar, #chatbot .avatar-image {
-    width: 32px !important; height: 32px !important; flex-shrink: 0 !important;
-}
-
-/* ===== Source box(检索到的片段) ===== */
-.source-box {
-    margin-top: 10px !important;
-    background: var(--bg-card) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 10px !important;
-    padding: 10px 14px !important;
-    font-size: 13.5px !important;
-    box-shadow: var(--shadow-soft) !important;
-}
-.source-box summary {
-    cursor: pointer;
-    color: var(--text-primary) !important;
-    font-weight: 500;
-    display: flex; align-items: center; gap: 6px;
-    list-style: none;
-}
-.source-box summary::-webkit-details-marker { display: none; }
-.source-box summary::before {
-    content: "▶";
-    color: var(--accent);
-    font-size: 9px;
-    transition: transform .2s;
-    display: inline-block;
-    margin-right: 2px;
-}
-.source-box[open] summary::before { transform: rotate(90deg); }
-.source-item {
-    background: var(--bg-hover) !important;
-    border-radius: 8px !important;
-    padding: 10px 12px !important;
-    margin: 8px 0 !important;
-    border-left: 3px solid var(--accent) !important;
-}
-.source-item .src-title { font-weight: 600 !important; color: var(--text-primary) !important; font-size: 13px !important; }
-.source-item .src-content { color: var(--text-secondary) !important; font-size: 12.5px !important; margin-top: 6px !important; line-height: 1.6 !important; white-space: pre-wrap; }
-.source-item .src-idx { color: var(--text-muted) !important; font-size: 11px !important; }
-.msg-meta {
-    font-size: 11.5px !important;
-    color: var(--text-muted) !important;
-    margin-top: 8px !important;
-}
-
-/* ===== 输入区(胶囊) ===== */
-.input-shell {
-    flex: 0 0 auto;
-    padding: 8px 24px 6px 24px;
-}
-.input-card {
-    display: flex !important;
-    align-items: center !important;
-    gap: 10px !important;
-    background: var(--bg-card) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 28px !important;
-    padding: 6px 8px 6px 20px !important;
-    box-shadow: var(--shadow-card) !important;
-}
-.input-card > .block,
-.input-card > .wrap,
-.input-card .gradio-textbox,
-.input-card .gradio-textbox > .wrap,
-.input-card textarea,
-.input-card input[type="text"] {
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-    color: var(--text-primary) !important;
-    padding-left: 0 !important;
-    padding-right: 0 !important;
-    font-size: 15px !important;
-    line-height: 1.6 !important;
-}
-.input-card textarea::placeholder,
-.input-card input::placeholder {
-    color: var(--text-muted) !important;
-    opacity: 0.85 !important;
-}
-
-.attach-btn {
-    background: transparent !important;
-    border: none !important;
-    color: var(--text-muted) !important;
-    width: 36px !important; min-width: 36px !important; height: 36px !important;
-    border-radius: 50% !important;
-    font-size: 18px !important;
-    box-shadow: none !important;
-}
-.attach-btn:hover { background: var(--bg-hover) !important; color: var(--text-secondary) !important; }
-
-.send-btn {
-    background: var(--accent) !important;
-    border: none !important;
-    width: 36px !important; min-width: 36px !important; height: 36px !important;
-    border-radius: 50% !important;
-    color: #fff !important;
-    font-size: 14px !important;
-    box-shadow: none !important;
-}
-.send-btn:hover { background: var(--accent-strong) !important; }
-
-.chat-footer {
-    flex: 0 0 auto;
-    padding: 6px 24px 14px 28px;
-    display: flex; align-items: center; gap: 8px;
-    font-size: 11px; color: var(--text-muted);
-}
-.chat-footer .brand-avatar {
-    width: 18px; height: 18px; border-radius: 5px;
-    background: linear-gradient(135deg, #fbbf77, #fdba74);
-    display: inline-flex; align-items: center; justify-content: center;
-    font-size: 10px;
-}
-"""
+</script>
+</body>
+</html>"""
 
 
-# ---------------------------------------------------------------------------
-# 回答内容渲染(保留全部原有文案,只重排样式)
-# ---------------------------------------------------------------------------
-HTML_WRAPPER = (
-    '<div class="bot-bubble" '
-    'style="font-family:-apple-system,BlinkMacSystemFont,'
-    '&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,'
-    '&quot;Microsoft YaHei&quot;,sans-serif;font-size:15px;'
-    'line-height:1.65;color:#1c1c1e;white-space:pre-wrap;">{}</div>'
-)
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        allowed = {"/", "/login", "/login/send-code", "/login/verify", "/logout",
+                    "/api/health", "/docs", "/openapi.json", "/favicon.ico"}
+        if path in allowed or path.startswith("/static/"):
+            return await call_next(request)
+        if path.startswith("/chat") or path.startswith("/api/"):
+            token = request.cookies.get("session_token")
+            if not token:
+                return RedirectResponse("/login", 302) if not path.startswith("/api/") else JSONResponse({"detail": "未登录"}, 401)
+            valid, _, _ = validate_session(token)
+            if not valid:
+                resp = RedirectResponse("/login", 302) if not path.startswith("/api/") else JSONResponse({"detail": "登录已过期"}, 401)
+                resp.delete_cookie("session_token")
+                return resp
+        return await call_next(request)
 
 
-def format_answer_html(answer: str, sources: list, latency_ms: int, tokens_used: int, has_kb: bool) -> str:
-    parts = [HTML_WRAPPER.format(answer)]
-    if has_kb and sources:
-        src_items = ""
-        for i, s in enumerate(sources, 1):
-            src_items += (
-                f'<div class="source-item">'
-                f'<div class="src-title">📎 来源 {i}:{s["title"]} '
-                f'<span class="src-idx">(chunk #{s["chunk_index"]})</span></div>'
-                f'<div class="src-content">{s["content"]}</div>'
-                f'</div>'
-            )
-        parts.append(
-            f'<details class="source-box">'
-            f'<summary>📚 检索到的知识库片段 (Top-5)</summary>'
-            f'{src_items}</details>'
-        )
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    latency_s = latency_ms / 1000
-    parts.append(
-        f'<div class="msg-meta">⏱ {latency_s:.1f}s · {tokens_used} tokens · 📅 {now}</div>'
-    )
-    return "".join(parts)
+app = FastAPI(title="公司知识助手 API", version="2.0.0")
+app.add_middleware(AuthMiddleware)
+
+try:
+    app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+except Exception:
+    pass
 
 
-def get_kb_html() -> str:
-    if _check_knowledge_base():
-        return '<span class="ok">✅ 知识库已就绪</span>'
-    return '<span class="warn">⚠️ 知识库未建立</span>'
+def _get_user_id(request: Request) -> int:
+    token = request.cookies.get("session_token")
+    if not token:
+        raise HTTPException(401, "未登录")
+    valid, uid, _ = validate_session(token)
+    if not valid:
+        raise HTTPException(401, "登录已过期")
+    return uid
 
 
-# ---------------------------------------------------------------------------
-# 对话状态管理(逻辑保持原状,只换前端样式)
-# ---------------------------------------------------------------------------
-def init_state():
-    return {"conversations": {}, "active_id": ""}
+def _get_user_email(request: Request) -> tuple:
+    token = request.cookies.get("session_token")
+    if not token:
+        raise HTTPException(401, "未登录")
+    valid, uid, email = validate_session(token)
+    if not valid:
+        raise HTTPException(401, "登录已过期")
+    return uid, email
 
 
-def _build_radio_choices(state):
-    if not state["conversations"]:
-        return gr.update(choices=[], value=None)
-    choices = []
-    active_val = None
-    for cid, cdata in state["conversations"].items():
-        label = f"{cdata['title']} ({cdata['created_at']})"
-        choices.append(label)
-        if cid == state["active_id"]:
-            active_val = label
-    return gr.update(choices=choices, value=active_val)
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    return LOGIN_PAGE
 
 
-def handle_new(state):
-    cid = datetime.now().strftime("%H%M%S")
-    title = f"对话 {cid}"
-    state["conversations"][cid] = {
-        "title": title, "messages": [], "created_at": datetime.now().strftime("%m-%d %H:%M")
-    }
-    state["active_id"] = cid
-    return state, [], _build_radio_choices(state)
+@app.post("/login/send-code")
+async def login_send_code(req: Request):
+    body = await req.json()
+    email = body.get("email", "").strip()
+    if not email or "@" not in email:
+        return JSONResponse({"detail": "请输入有效的邮箱地址"}, 400)
+    send_verification_code(email)
+    return {"ok": True}
 
 
-def handle_switch(selected, state):
-    if not selected or not state["conversations"]:
-        return state, [], _build_radio_choices(state)
-    for cid, cdata in state["conversations"].items():
-        if f"{cdata['title']} ({cdata['created_at']})" == selected:
-            state["active_id"] = cid
-            return state, cdata["messages"], _build_radio_choices(state)
-    return state, [], _build_radio_choices(state)
+@app.post("/login/verify")
+async def login_verify(req: Request):
+    body = await req.json()
+    email = body.get("email", "").strip()
+    code = body.get("code", "").strip()
+    ok, err = verify_code(email, code)
+    if not ok:
+        return JSONResponse({"detail": err}, 400)
+    token = create_session(email)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie("session_token", token, max_age=86400, httponly=True, samesite="lax", path="/")
+    return resp
 
 
-def handle_delete(state):
-    aid = state["active_id"]
-    if aid in state["conversations"]:
-        del state["conversations"][aid]
-    if state["conversations"]:
-        state["active_id"] = list(state["conversations"].keys())[-1]
-        msgs = state["conversations"][state["active_id"]]["messages"]
-    else:
-        state["active_id"] = ""
-        msgs = []
-    return state, msgs, _build_radio_choices(state)
+@app.get("/logout")
+def logout():
+    resp = RedirectResponse("/login", 302)
+    resp.delete_cookie("session_token")
+    return resp
 
 
-def handle_send(message, chat_history, state):
-    if not message or not message.strip():
-        return "", chat_history, state, _build_radio_choices(state)
-
-    aid = state["active_id"]
-    if not aid:
-        state, chat_history, _ = handle_new(state)
-        aid = state["active_id"]
-
-    chat_history = chat_history or []
-    chat_history.append({"role": "user", "content": message})
-
-    try:
-        result = ask(message)
-        html = format_answer_html(
-            result["answer"], result.get("sources", []),
-            result.get("latency_ms", 0), result.get("tokens_used", 0),
-            result.get("has_kb", False),
-        )
-        chat_history.append({"role": "assistant", "content": html})
-    except Exception as e:
-        chat_history.append({"role": "assistant", "content": f"❌ 调用失败:{str(e)}"})
-
-    state["conversations"][aid]["messages"] = chat_history
-    return "", chat_history, state, _build_radio_choices(state)
+@app.get("/")
+def root(request: Request):
+    token = request.cookies.get("session_token")
+    logged_in = False
+    if token:
+        valid, _, _ = validate_session(token)
+        if valid:
+            logged_in = True
+    chat_link = '<a href="/chat" style="color:#2563eb">💬 进入聊天</a>' if logged_in else '<a href="/login" style="color:#2563eb">🔐 登录</a>'
+    return HTMLResponse(f'<html><body style="font-family:sans-serif;text-align:center;padding-top:80px;background:#f5f5f7;color:#1c1c1e"><h1>📋 公司知识助手</h1><p>{chat_link} | <a href="/docs" style="color:#2563eb">📖 API 文档</a></p></body></html>')
 
 
-# ---------------------------------------------------------------------------
-# Gradio 界面
-# ---------------------------------------------------------------------------
-def build_gradio():
-    with gr.Blocks(title="公司知识助手", elem_classes="app-shell") as demo:
-        state = gr.State(init_state())
-
-        with gr.Row(elem_classes="app-row"):
-            # ---------- 左侧栏 ----------
-            with gr.Column(elem_classes="sidebar"):
-                gr.HTML(
-                    '<div class="sb-header">'
-                    '<div class="title">'
-                    '<span class="title-icon">📋</span>'
-                    '<span>公司知识助手</span>'
-                    '</div>'
-                    '<div class="toggle" title="折叠">⇤</div>'
-                    '</div>'
-                )
-                new_btn = gr.Button("✨ 开启新对话", elem_classes="new-chat-btn")
-                gr.HTML('<div class="sb-section-title">历史对话</div>')
-                conv_radio = gr.Radio(
-                    choices=[], label="", interactive=True,
-                    elem_classes="conv-scroll", show_label=False,
-                )
-                del_btn = gr.Button("🗑 删除当前对话", elem_classes="del-btn")
-                gr.HTML(
-                    f'<div class="sidebar-kb">'
-                    f'{get_kb_html()}<br/>'
-                    'DeepSeek + 硅基流动<br/>'
-                    '14 篇 · 707 chunks'
-                    f'</div>'
-                )
-
-            # ---------- 主聊天区 ----------
-            with gr.Column(elem_classes="chat-col", scale=4):
-                # 顶部刷新按钮(右对齐)
-                gr.HTML(
-                    '<div class="chat-topbar">'
-                    '<div></div>'
-                    '<div class="icon-btn" title="刷新对话">↻</div>'
-                    '</div>'
-                )
-
-                # 聊天面板(占满剩余高度)
-                with gr.Column(elem_classes="chatbot-shell"):
-                    chatbot = gr.Chatbot(
-                        elem_id="chatbot",
-                        avatar_images=(USER_AVATAR, BOT_AVATAR),
-                        resizable=True,
-                        placeholder="欢迎使用公司知识助手，输入问题开始对话...",
-                        show_label=False,
-                    )
-
-                # 输入区(胶囊式)
-                with gr.Row(elem_classes="input-card"):
-                    msg_input = gr.Textbox(
-                        placeholder="输入问题，如：客单价怎么算？",
-                        scale=8,
-                        container=False,
-                        autofocus=True,
-                        show_label=False,
-                    )
-                    gr.Button("📎", elem_classes="attach-btn", scale=0)
-                    send_btn = gr.Button("➤", elem_classes="send-btn", scale=0)
-
-                # 底部脚注
-                gr.HTML(
-                    '<div class="chat-footer">'
-                    '<span class="brand-avatar">📋</span>'
-                    '<span>本系统由 DeepSeek · 硅基流动 强力驱动</span>'
-                    '</div>'
-                )
-
-        # ---------- 事件绑定 ----------
-        send_btn.click(
-            handle_send,
-            [msg_input, chatbot, state],
-            [msg_input, chatbot, state, conv_radio],
-        )
-        msg_input.submit(
-            handle_send,
-            [msg_input, chatbot, state],
-            [msg_input, chatbot, state, conv_radio],
-        )
-        new_btn.click(handle_new, state, [state, chatbot, conv_radio])
-        conv_radio.change(handle_switch, [conv_radio, state], [state, chatbot, conv_radio])
-        del_btn.click(handle_delete, state, [state, chatbot, conv_radio])
-
-    return demo
+@app.get("/chat", response_class=HTMLResponse)
+def chat_page():
+    fp = os.path.join(BASE_DIR, "static", "chat.html")
+    if os.path.exists(fp):
+        return FileResponse(fp)
+    return HTMLResponse("<h1>聊天页面加载失败</h1>", 500)
 
 
-# ---------------------------------------------------------------------------
-# FastAPI 包装(原样保留 API 接口)
-# ---------------------------------------------------------------------------
-class AskRequest(BaseModel):
-    question: str
-
-
-class AskResponse(BaseModel):
-    answer: str
-    sources: list
-    has_kb: bool
-    latency_ms: int
-    tokens_used: int
-
-
-app = FastAPI(title="公司知识助手 API", description="基于 RAG 的企业内部知识库问答系统", version="1.0.0")
-
-
-@app.get("/", response_class=HTMLResponse)
-def root():
-    return (
-        '<html><body style="font-family:sans-serif;text-align:center;'
-        'padding-top:80px;background:#f5f5f7;color:#1c1c1e">'
-        '<h1>📋 公司知识助手</h1>'
-        '<p>API 已就绪 | <a href="/docs" style="color:#2563eb">📖 API 文档</a> | '
-        '<a href="/chat" style="color:#2563eb">💬 聊天界面</a></p>'
-        '</body></html>'
-    )
-
-
-@app.post("/api/ask", response_model=AskResponse, summary="RAG 知识问答")
-def api_ask(req: AskRequest):
-    result = ask(req.question)
-    return AskResponse(**result)
-
-
-@app.get("/api/health", summary="健康检查")
+@app.get("/api/health")
 def health():
     return {"status": "ok", "has_kb": _check_knowledge_base()}
 
 
-demo = build_gradio()
-app = gr.mount_gradio_app(app, demo, path="/chat", css=CSS)
+@app.get("/api/me")
+def api_me(request: Request):
+    uid, email = _get_user_email(request)
+    return {"user_id": uid, "email": email}
+
+
+@app.get("/api/conversations")
+def api_list_conversations(request: Request):
+    uid = _get_user_id(request)
+    rows = get_user_conversations(uid)
+    result = []
+    for r in rows:
+        msgs = get_conversation_messages(r["id"])
+        result.append({
+            "id": r["id"],
+            "title": r["title"],
+            "created_at": r["created_at"].strftime("%Y-%m-%dT%H:%M:%S") if isinstance(r["created_at"], datetime) else str(r["created_at"]),
+            "message_count": len(msgs),
+        })
+    return result
+
+
+@app.post("/api/conversations")
+async def api_create_conversation(request: Request):
+    body = await request.json()
+    title = body.get("title", "").strip() or f"对话 {datetime.now().strftime('%H:%M')}"
+    uid = _get_user_id(request)
+    conv_id = create_conversation(uid, title)
+    return {"id": conv_id, "title": title}
+
+
+@app.delete("/api/conversations/{conv_id}")
+def api_delete_conversation(conv_id: int, request: Request):
+    uid = _get_user_id(request)
+    delete_conversation(conv_id, uid)
+    return {"ok": True}
+
+
+@app.get("/api/conversations/{conv_id}/messages")
+def api_get_messages(conv_id: int, request: Request):
+    _get_user_id(request)
+    msgs = get_conversation_messages(conv_id)
+    return msgs
+
+
+class ChatRequest(BaseModel):
+    question: str
+    conversation_id: int | None = None
+
+
+@app.post("/api/chat")
+async def api_chat(req: ChatRequest, request: Request):
+    uid = _get_user_id(request)
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(400, "问题不能为空")
+
+    conv_id = req.conversation_id
+    if conv_id is None:
+        title = question[:30] + ("..." if len(question) > 30 else "")
+        conv_id = create_conversation(uid, title)
+
+    save_message(conv_id, "user", question)
+    result = ask(question)
+    save_message(conv_id, "assistant", result["answer"])
+
+    return {
+        "conversation_id": conv_id,
+        "answer": result["answer"],
+        "sources": result.get("sources", []),
+        "has_kb": result.get("has_kb", False),
+        "latency_ms": result.get("latency_ms", 0),
+        "tokens_used": result.get("tokens_used", 0),
+    }
 
 
 if __name__ == "__main__":

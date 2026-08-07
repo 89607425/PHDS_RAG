@@ -1,148 +1,300 @@
-# PHDS_RAG
+# Company-RAG
 
-> 企业级 RAG 知识库问答系统 · 零 GPU 部署 · 全 API 调用 · 分钟级上线
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python">
+  <img src="https://img.shields.io/badge/fastapi-0.141-green.svg" alt="FastAPI">
+  <img src="https://img.shields.io/badge/llm-DeepSeek--chat-purple.svg" alt="LLM">
+  <img src="https://img.shields.io/badge/embedding-BGE--large--zh-orange.svg" alt="Embedding">
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey.svg" alt="License">
+</p>
 
-基于 **DeepSeek** 大语言模型 + **硅基流动** Embedding + **ChromaDB** 向量数据库，面向企业内部知识管理的轻量级 RAG 解决方案。支持 Word 文档一键入库，提供 Web 聊天界面和 RESTful API 两套访问方式。
-
----
-
-## 技术架构
-
-```
-Word 文档 → python-docx 提取文本 → LangChain 分块 → 硅基流动 Embedding → ChromaDB 存储
-                                                                              ↓
-用户提问 → 硅基流动向量化 → ChromaDB 相似检索 Top-K → DeepSeek 生成答案 → 返回（含来源引用）
-```
-
-| 环节 | 技术选型 |
-|------|----------|
-| 文档解析 | python-docx |
-| 文本分块 | LangChain RecursiveCharacterTextSplitter |
-| 向量化 | 硅基流动 API · BAAI/bge-large-zh-v1.5 |
-| 向量数据库 | ChromaDB（本地嵌入式） |
-| 大语言模型 | DeepSeek API · deepseek-chat |
-| 编排框架 | LangChain |
-| Web 服务 | FastAPI + Uvicorn |
-| 聊天界面 | Gradio |
+<p align="center">
+  <strong>Enterprise RAG Knowledge Q&A System</strong><br>
+  Zero-GPU · Full API Stack · Email Auth · Conversation Persistence · SPA Frontend
+</p>
 
 ---
 
-## 快速开始
+## Architecture
 
-### 1. 环境准备
+```
+┌──────────────┐    ┌──────────────┐    ┌─────────────────┐
+│  .docx/.pdf   │───▶│  Chunker     │───▶│  SiliconFlow    │
+│  .doc/MIME   │    │  (LangChain) │    │  BGE-large-zh   │
+└──────────────┘    └──────────────┘    └────────┬────────┘
+                                                 │
+                    ┌────────────────────────────▼─────────────────────────────┐
+                    │                      ChromaDB                             │
+                    │                 (Persistent Vector Store)                  │
+                    └────────────────────────────┬─────────────────────────────┘
+                                                 │
+┌──────────────┐    ┌────────────────────────────▼─────────────────────────────┐
+│   SPA Chat   │◀──▶│  FastAPI Server                                           │
+│  (HTML/CSS/  │    │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────┐ │
+│   JS)        │    │  │  Auth    │  │  RAG     │  │  Conv    │  │  Eval     │ │
+│              │    │  │  SMTP    │  │  Chain   │  │  CRUD    │  │  Metrics  │ │
+└──────────────┘    │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └─────┬─────┘ │
+                    │       │             │             │               │        │
+                    └───────┼─────────────┼─────────────┼───────────────┼────────┘
+                            │             │             │               │
+                    ┌───────▼─────────────▼─────────────▼───────────────▼────────┐
+                    │                       MySQL                                 │
+                    │   users │ verification_codes │ sessions │ conversations    │
+                    │                          messages                           │
+                    └────────────────────────────────────────────────────────────┘
+```
+
+| Layer | Technology |
+|-------|-----------|
+| Document Parsing | python-docx, PyMuPDF, email MIME parser |
+| Chunking | LangChain `RecursiveCharacterTextSplitter` |
+| Embedding | SiliconFlow API · `BAAI/bge-large-zh-v1.5` |
+| Vector Store | ChromaDB (local persistent) |
+| LLM | DeepSeek API · `deepseek-chat` |
+| Web Framework | FastAPI + Uvicorn |
+| Frontend | Vanilla SPA (HTML/CSS/JS) — ChatGPT-style UI |
+| Database | MySQL 8.0 + PyMySQL |
+| Auth | Email verification code (SMTP) + session cookie |
+
+---
+
+## Features
+
+- **Zero GPU** — Fully API-driven, runs on commodity CPU
+- **Chinese Optimized** — BGE-large-zh embeddings + DeepSeek Chinese LLM
+- **Multi-format Documents** — `.docx`, `.pdf`, and legacy `.doc` (MIME HTML) files
+- **Email Login** — SMTP verification codes, 24h session persistence
+- **Conversation History** — Full CRUD persisted to MySQL, visible in Navicat
+- **Beautiful SPA** — ChatGPT-inspired responsive chat interface
+- **Source Citations** — Every answer includes Top-5 retrieved document fragments
+- **Built-in Evaluation** — Hit Rate@5, MRR, Faithfulness, Answer Relevancy via LLM-as-Judge
+- **RESTful API** — Full Swagger docs at `/docs`
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.11+
+- MySQL 8.0+ running on `localhost:3306`
+- [SiliconFlow API Key](https://siliconflow.cn)
+- [DeepSeek API Key](https://platform.deepseek.com)
+- SMTP credentials (e.g. 163 mailbox with auth code enabled)
+
+### 1. Install Dependencies
 
 ```bash
-# 创建 conda 环境
 conda create -n RAG python=3.11 -y
 conda activate RAG
-
-# 安装依赖
 pip install -r requirements.txt
 ```
 
-### 2. 配置 API 密钥
+### 2. Configure Environment
 
-在项目根目录创建 `.env` 文件（参考 `.env.example`）：
-
-```env
-SILICONFLOW_API_KEY=sk-your-siliconflow-key
-DEEPSEEK_API_KEY=sk-your-deepseek-key
-EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
-LLM_MODEL=deepseek-chat
-CHUNK_SIZE=400
-CHUNK_OVERLAP=60
-COLLECTION_NAME=company_wiki
-DB_DIR=./chroma_db
+```bash
+cp .env.example .env
+# Edit .env with your API keys, MySQL credentials, and SMTP settings
 ```
 
-> 🔑 申请地址：[硅基流动](https://siliconflow.cn) · [DeepSeek](https://platform.deepseek.com)
+Key environment variables:
 
-### 3. 导入知识库
+| Variable | Description |
+|----------|-------------|
+| `DEEPSEEK_API_KEY` | DeepSeek API key |
+| `SILICONFLOW_API_KEY` | SiliconFlow API key |
+| `DB_PASS` | MySQL root password |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | SMTP server config |
 
-将 Word 文档放入 `wiki_docs/` 目录，执行入库脚本：
+### 3. Initialize MySQL Schema
+
+Tables are auto-created on first launch. You can also verify manually:
+
+```sql
+CREATE DATABASE IF NOT EXISTS company_rag
+  DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+### 4. Build Knowledge Base
+
+Place documents in `wiki_docs/`, then:
 
 ```bash
 python build_index.py
 ```
 
-### 4. 启动服务
+### 5. Start Server
 
 ```bash
 python app.py
 ```
 
-服务启动后可访问：
-
-| 地址 | 说明 |
-|------|------|
-| `http://localhost:7860` | 导航页 |
-| `http://localhost:7860/chat` | 聊天界面 |
-| `http://localhost:7860/docs` | API 文档 (Swagger) |
+| URL | Description |
+|-----|-------------|
+| `http://localhost:7860` | Landing page |
+| `http://localhost:7860/login` | Email verification login |
+| `http://localhost:7860/chat` | SPA chat interface |
+| `http://localhost:7860/docs` | Swagger API docs |
 
 ---
 
-## API 接口
+## API Reference
 
-### POST /api/ask — RAG 知识问答
+### Authentication
+
+All `/api/*` and `/chat` endpoints require a valid `session_token` cookie obtained via login.
+
+<details>
+<summary><b>POST /login/send-code</b> — Send verification code</summary>
 
 ```bash
-curl -X POST http://localhost:7860/api/ask \
+curl -X POST http://localhost:7860/login/send-code \
   -H "Content-Type: application/json" \
-  -d '{"question": "年假有多少天？"}'
+  -d '{"email": "user@company.com"}'
+
+# {"ok": true}
+```
+</details>
+
+<details>
+<summary><b>POST /login/verify</b> — Verify code & login</summary>
+
+```bash
+curl -X POST http://localhost:7860/login/verify \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@company.com", "code": "123456"}'
+
+# Sets session_token cookie, returns {"ok": true}
+```
+</details>
+
+<details>
+<summary><b>GET /logout</b> — Logout</summary>
+
+```bash
+curl http://localhost:7860/logout
+# Clears session_token cookie, redirects to /login
+```
+</details>
+
+### Knowledge Q&A
+
+<details>
+<summary><b>POST /api/chat</b> — Ask a question (RAG)</summary>
+
+```bash
+curl -X POST http://localhost:7860/api/chat \
+  -H "Content-Type: application/json" \
+  -b "session_token=YOUR_TOKEN" \
+  -d '{"question": "客单价怎么计算？"}'
 ```
 
-响应：
+Response:
 
 ```json
 {
-  "answer": "根据《员工手册》规定...",
+  "conversation_id": 1,
+  "answer": "客单价 = 销售金额 / 来客数...",
   "sources": [
-    {"title": "员工手册", "source": "./wiki_docs/员工手册.docx"}
+    {"title": "客单价", "content": "...", "chunk_index": 3}
   ],
-  "has_kb": true
+  "has_kb": true,
+  "latency_ms": 1500,
+  "tokens_used": 1200
 }
 ```
 
-### GET /api/health — 健康检查
+If `conversation_id` is `null`, a new conversation is auto-created from the question.
+</details>
+
+<details>
+<summary><b>GET /api/health</b> — Health check</summary>
 
 ```bash
 curl http://localhost:7860/api/health
 # {"status": "ok", "has_kb": true}
 ```
+</details>
+
+### Conversation Management
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/me` | Current user info |
+| `GET` | `/api/conversations` | List user's conversations |
+| `POST` | `/api/conversations` | Create new conversation |
+| `DELETE` | `/api/conversations/{id}` | Delete conversation |
+| `GET` | `/api/conversations/{id}/messages` | Get messages for a conversation |
 
 ---
 
-## 项目结构
+## Evaluation
+
+The project includes a self-contained RAG evaluation framework.
+
+```bash
+python evaluate.py
+```
+
+Metrics:
+
+| Metric | Description | Score |
+|--------|-------------|-------|
+| Hit Rate@5 | Ground truth doc appears in Top-5 retrieval | 100% |
+| MRR@5 | Mean Reciprocal Rank of correct doc | 0.836 |
+| Faithfulness | Answer grounded in retrieved context (LLM-as-Judge) | 0.87 |
+| Answer Relevancy | Answer directly addresses the question (LLM-as-Judge) | 0.83 |
+
+Extend `test_set.json` with more question-answer pairs to improve benchmark coverage.
+
+---
+
+## Project Structure
 
 ```
-PHDS_RAG/
-├── .env.example            # 环境变量模板
+company-rag/
+├── app.py                  # FastAPI server + auth middleware + API routes
+├── auth.py                 # Email verification + session management
+├── database.py             # MySQL connection pool + schema init
+├── build_index.py          # Offline document ingestion pipeline
+├── document_loader.py      # .docx / .pdf / .doc (MIME) parser
+├── chunker.py              # LangChain text splitter
+├── embeddings.py           # SiliconFlow embedding config
+├── vector_store.py         # ChromaDB vector store operations
+├── rag_chain.py            # Core RAG pipeline (retrieve → generate)
+├── evaluate.py             # RAG evaluation (Hit Rate, MRR, Faithfulness)
+├── test_set.json           # Evaluation test questions + ground truth
+├── requirements.txt        # Python dependencies
+├── .env.example            # Environment variable template
 ├── .gitignore
-├── requirements.txt        # Python 依赖
-├── build_index.py          # 离线入库脚本
-├── app.py                  # 主服务（FastAPI + Gradio）
-├── document_loader.py      # Word 文档解析
-├── chunker.py              # 文本分块
-├── embeddings.py           # Embedding 模型配置
-├── vector_store.py         # ChromaDB 向量库操作
-├── rag_chain.py            # RAG 核心链路
-├── wiki_docs/              # Word 文档目录（不入库）
-└── chroma_db/              # 向量数据库（不纳入版本控制）
+├── static/
+│   └── chat.html           # ChatGPT-style SPA frontend
+└── wiki_docs/              # Source documents (gitignored)
+    ├── 客单价.pdf
+    ├── 核心指标概览.pdf
+    ├── 实际毛利率.docx
+    ├── 库存周转.docx
+    ├── ... (14 documents total)
 ```
 
 ---
 
-## 特性
+## Database Schema
 
-- **零 GPU 依赖**：全 API 调用，普通 CPU 服务器即可运行
-- **中文优化**：BGE-large-zh 向量模型 + DeepSeek 中文大模型
-- **开箱即用**：pip install + 配置 API key + 放入文档 = 运行
-- **双界面**：Gradio Web 聊天 + RESTful API（含 Swagger 文档）
-- **来源可追溯**：答案附带文档来源引用
-- **低成本**：DeepSeek ¥1/百万 Token，硅基流动免费额度充足
+5 tables in MySQL `company_rag` database:
+
+| Table | Description |
+|-------|-------------|
+| `users` | Registered users (email unique) |
+| `verification_codes` | Time-limited login codes (5 min expiry) |
+| `sessions` | Auth session tokens (24h expiry) |
+| `conversations` | Chat conversations per user |
+| `messages` | Messages within conversations (CASCADE delete) |
+
+All tables use `utf8mb4` charset with `InnoDB` engine.
 
 ---
 
-## 许可证
+## License
 
-MIT License
+MIT
