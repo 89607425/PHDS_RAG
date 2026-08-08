@@ -407,7 +407,7 @@ async def api_chat(req: ChatRequest, request: Request):
         "has_kb": result.get("has_kb", False),
         "latency_ms": result.get("latency_ms", 0),
         "tokens_used": result.get("tokens_used", 0),
-        "self_check": result.get("self_check", {}),
+        "self_check_score": result.get("self_check_score"),
     }
 
 

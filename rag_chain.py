@@ -34,16 +34,12 @@ RAG_SYSTEM = """你是一个公司内部知识助手。请根据以下检索到�
 1. 只根据提供的文档片段回答，不要编造信息
 2. 如果文档中没有相关内容，明确告知"根据现有文档无法回答该问题"
 3. 回答简洁、准确、条理清晰
-4. 涉及具体数字、日期、金额时，务必引用原文
-5. **每条关键事实后必须标注来源**，格式：`[来源：文档名-片段N]`
-   例如：会员品单价 = 销售额 / 来客数 [来源：客单价-片段2]
-6. 不要在文末重复罗列来源，直接内联标注"""
+4. 涉及具体数字、日期、金额时，务必引用原文"""
 
 FALLBACK_SYSTEM = """你是一个公司内部知识助手。
 当前知识库中没有已上传的文档，以下回答基于通用知识，仅供参考。"""
 
-REFUSE_RESPONSE = "抱歉，根据现有文档无法回答该问题。建议查阅原始文档或联系相关同事确认。"
-VERIFY_FAILED_RESPONSE = "核验失败，暂无法确认该回答的准确性。请稍后重试或查阅原始文档。"
+LOW_CONFIDENCE_RESPONSE = "抱歉，资料不足，我无法确认该问题的准确答案。现有文档中没有找到足够的依据来回答您的问题，建议查阅原始文档或联系相关同事确认。"
 
 
 def _check_knowledge_base() -> bool:
@@ -227,39 +223,9 @@ def hybrid_retrieve(query: str, top_n: int = 20) -> list[dict]:
     return final
 
 
-# ===== 6. Self-Check (per-claim verification) =====
+# ===== 6. Self-Check =====
 
-SELF_CHECK_PROMPT = """你是一个严格的事实核查员。逐条核查 AI 回答中的每一项关键事实声明是否能在检索上下文中找到原文支持。
-
-## 检索上下文（每个片段有唯一 ID）
-{context}
-
-## 用户问题
-{question}
-
-## AI 回答（含来源标记）
-{answer}
-
-## 核查要求
-1. 将回答拆解为独立的事实声明（claim）
-2. 对每条 claim，在上下文中找到最相关的片段 ID
-3. 判断 verdict：
-   - supported：claim 在对应片段中有明确原文
-   - unsupported：claim 在检索上下文中找不到任何依据
-   - contradicted：claim 与上下文中的信息冲突
-   - inference：claim 是上下文信息的合理推断（非原文但逻辑一致）
-4. 判定 overall_score（0.0-1.0）和 final_action
-
-## 输出严格 JSON（不要 markdown 代码块，直接输出纯 JSON）
-{{"claims":[{{"claim":"...","verdict":"supported|unsupported|contradicted|inference","source_fragment":"文档名-片段N 或 null"}}],"overall_score":0.0,"final_action":"pass|rewrite|refuse"}}
-
-## final_action 规则
-- pass：所有 verdict 为 supported 或 inference，无 unsupported/contradicted
-- rewrite：存在 unsupported 或 contradicted 的 claim，但核心问题仍有 supported claim 可回答
-- refuse：retrieved docs 中没有与问题相关的任何内容，或全部 claim 均为 unsupported/contradicted"""
-
-
-SAFE_REWRITE_PROMPT = """你是一个回答安全改写员。以下回答经核查有部分事实无法在检索上下文中找到依据，请仅保留有证据支持的内容，删除或改写不被支持的部分。
+SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中的关键数据、公式、规则是否都能在检索上下文中找到原文支持。
 
 ## 检索上下文
 {context}
@@ -267,21 +233,19 @@ SAFE_REWRITE_PROMPT = """你是一个回答安全改写员。以下回答经核�
 ## 用户问题
 {question}
 
-## 原始回答
-{original_answer}
+## AI 回答
+{answer}
 
-## 核查结果（只关注 unsupported/contradicted 的 claim）
-{failed_claims}
+## 评分标准
+- 1.0: 所有关键事实在上下文中有明确原文
+- 0.8-0.9: 大部分事实有依据，少量合理推断
+- 0.4-0.7: 部分事实缺乏依据
+- 0.0-0.3: 大量编造或与上下文冲突
 
-## 改写规则
-1. 仅保留检索上下文中有证据支持的信息
-2. 可以简化、合并，但不能添加任何新信息
-3. 改写后的每条事实仍需带来源标记 [来源：文档名-片段N]
-4. 如果改写后完全没有可回答的内容，直接输出：REFUSE
-5. 直接输出改写后的回答，不要任何解释或前缀"""
+只输出一个 0.0-1.0 之间的数字，不要任何其他内容。"""
 
 
-def self_check(question: str, answer: str, context: str) -> dict:
+def self_check(question: str, answer: str, context: str) -> float:
     try:
         llm = get_llm()
         prompt = SELF_CHECK_PROMPT.format(
@@ -289,62 +253,17 @@ def self_check(question: str, answer: str, context: str) -> dict:
         )
         resp = llm.invoke(prompt)
         text = resp.content.strip()
-
-        # Robust JSON extraction
-        import re as _re
-        # Remove markdown code fences
-        text = _re.sub(r'```(?:json)?\s*', '', text)
-        text = _re.sub(r'```', '', text)
-        # Find the first '{' and last '}'
-        start = text.find('{')
-        end = text.rfind('}')
-        if start == -1 or end == -1 or start >= end:
-            raise json.JSONDecodeError("No JSON object found", text, 0)
-        json_text = text[start:end+1]
-
-        result = json.loads(json_text)
-        logger.info(f"Self-check: score={result.get('overall_score', '?')}, "
-                    f"action={result.get('final_action', '?')}, claims={len(result.get('claims', []))}")
-        for c in result.get("claims", []):
-            v = c.get("verdict", "?")
-            if v in ("unsupported", "contradicted"):
-                logger.warning(f"  ⚠ {v}: {c.get('claim', '?')[:80]}")
-        return result
-    except (json.JSONDecodeError, KeyError) as e:
-        raw_preview = resp.content[:200] if 'resp' in locals() else 'N/A'
-        logger.error(f"Self-check JSON parse failed: {e}. Raw: {raw_preview}")
-        return {"claims": [], "overall_score": 0.0, "final_action": "refuse",
-                "_error": "parse_failed"}
+        match = re.search(r'(\d+\.?\d*)', text)
+        if match:
+            score = float(match.group(1))
+            score = max(0.0, min(1.0, score))
+            logger.info(f"Self-check score: {score}")
+            return score
+        logger.warning(f"Self-check: could not parse score from: {text[:100]}")
+        return 0.8
     except Exception as e:
-        logger.error(f"Self-check LLM call failed: {e}")
-        return {"claims": [], "overall_score": 0.0, "final_action": "refuse",
-                "_error": "llm_failed"}
-
-
-def safe_rewrite(question: str, original_answer: str, context: str, check_result: dict) -> str | None:
-    failed = [c for c in check_result.get("claims", [])
-              if c.get("verdict") in ("unsupported", "contradicted")]
-    if not failed and check_result.get("final_action") != "rewrite":
-        return None
-
-    try:
-        llm = get_llm()
-        failed_text = "\n".join(f"- [{c.get('verdict')}] {c.get('claim', '')}" for c in failed[:10])
-        prompt = SAFE_REWRITE_PROMPT.format(
-            question=question,
-            original_answer=original_answer,
-            context=context[:3000],
-            failed_claims=failed_text or "无具体失败项",
-        )
-        resp = llm.invoke(prompt)
-        rewritten = resp.content.strip()
-        if rewritten and rewritten.strip() != "REFUSE" and len(rewritten) > 10:
-            logger.info(f"Safe rewrite succeeded: {len(rewritten)} chars")
-            return rewritten
-        logger.info("Safe rewrite returned REFUSE or too short")
-    except Exception as e:
-        logger.warning(f"Safe rewrite failed: {e}")
-    return None
+        logger.warning(f"Self-check failed: {e}")
+        return 0.8
 
 
 # ===== Main API =====
@@ -361,28 +280,6 @@ def _build_sources(docs: list[dict]) -> list[dict]:
         }
         for d in docs
     ]
-
-
-def _verify_and_finalize(question: str, raw_answer: str, context: str) -> dict:
-    """Run self-check and safe-rewrite pipeline. Returns {final_answer, check_result}."""
-    check_result = self_check(question, raw_answer, context)
-    action = check_result.get("final_action", "refuse")
-
-    if action == "pass":
-        return {"final_answer": raw_answer, "check_result": check_result}
-
-    if action == "rewrite":
-        rewritten = safe_rewrite(question, raw_answer, context, check_result)
-        if rewritten:
-            return {"final_answer": rewritten, "check_result": check_result,
-                    "rewritten": True}
-
-    if check_result.get("_error"):
-        logger.warning(f"Verification failed due to error: {check_result.get('_error')}")
-        return {"final_answer": VERIFY_FAILED_RESPONSE, "check_result": check_result,
-                "_refuse_reason": check_result.get("_error")}
-
-    return {"final_answer": REFUSE_RESPONSE, "check_result": check_result}
 
 
 def ask(question: str, conversation_history: list[dict] = None,
@@ -413,30 +310,24 @@ def ask(question: str, conversation_history: list[dict] = None,
                 llm = get_llm()
                 messages = [SystemMessage(content=RAG_SYSTEM), HumanMessage(content=user_content)]
                 response = llm.invoke(messages)
-                raw_answer = response.content
+                answer = response.content
                 tokens_used = _extract_tokens(response)
 
-                verified = _verify_and_finalize(question, raw_answer, context)
-                final_answer = verified["final_answer"]
-                check_result = verified["check_result"]
+                self_check_score = self_check(question, answer, context)
+                if self_check_score < 0.7:
+                    answer = LOW_CONFIDENCE_RESPONSE
 
                 sources = _build_sources(retrieved_docs)
                 latency_ms = int((time.time() - t0) * 1000)
 
                 return {
-                    "answer": final_answer,
+                    "answer": answer,
                     "sources": sources,
                     "has_kb": True,
                     "latency_ms": latency_ms,
                     "tokens_used": tokens_used,
                     "rewritten_query": rewritten if rewritten != original_question else None,
-                    "self_check": {
-                        "score": check_result.get("overall_score"),
-                        "action": check_result.get("final_action"),
-                        "claims": check_result.get("claims", []),
-                        "rewritten": verified.get("rewritten", False),
-                        "_refuse_reason": verified.get("_refuse_reason"),
-                    },
+                    "self_check_score": self_check_score,
                 }
         except Exception as e:
             logger.error(f"RAG pipeline failed: {e}")
@@ -489,33 +380,11 @@ def ask_stream(question: str, conversation_history: list[dict] = None,
                     "rewritten_query": rewritten if rewritten != question else None,
                 }}, ensure_ascii=False) + "\n"
 
-                # Generate full answer first (non-streaming) for safety verification
-                yield json.dumps({"type": "status", "data": "生成中，请稍候..."}, ensure_ascii=False) + "\n"
-
-                llm_sync = get_llm(streaming=False)
+                llm = get_llm(streaming=True)
                 messages = [SystemMessage(content=RAG_SYSTEM), HumanMessage(content=user_content)]
-                resp = llm_sync.invoke(messages)
-                raw_answer = resp.content
-
-                verified = _verify_and_finalize(question, raw_answer, context)
-                final_answer = verified["final_answer"]
-                check_result = verified["check_result"]
-
-                yield json.dumps({"type": "self_check", "data": {
-                    "score": check_result.get("overall_score"),
-                    "action": check_result.get("final_action"),
-                    "claims": [
-                        {"claim": c.get("claim", ""), "verdict": c.get("verdict", ""),
-                         "source_fragment": c.get("source_fragment")}
-                        for c in check_result.get("claims", [])
-                    ],
-                    "rewritten": verified.get("rewritten", False),
-                }}, ensure_ascii=False) + "\n"
-
-                # Stream the verified final answer token by token
-                for i in range(0, len(final_answer), 2):
-                    chunk = final_answer[i:i+2]
-                    yield json.dumps({"type": "token", "data": chunk}, ensure_ascii=False) + "\n"
+                for chunk in llm.stream(messages):
+                    if chunk.content:
+                        yield json.dumps({"type": "token", "data": chunk.content}, ensure_ascii=False) + "\n"
 
                 yield json.dumps({"type": "done", "data": {}}, ensure_ascii=False) + "\n"
                 return

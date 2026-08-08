@@ -36,7 +36,7 @@
 | **Query 改写** | 查询优化 | DeepSeek deepseek-chat | 补全缩写、口语化→正式术语，提升检索命中率 |
 | **多轮记忆** | 对话上下文 + 摘要 | DeepSeek deepseek-chat | 摘要 + 最近 6 条消息联合压缩；超 8 条自动触发摘要合并 |
 | **生成** | 答案合成 | DeepSeek `deepseek-chat` | temp=0.1、max_tokens=2000、流式输出 + SSE |
-| **Self-Check** | 回答准入机制 | DeepSeek deepseek-chat (LLM-as-Judge) | 逐 claim 核验(supported/unsupported/contradicted/inference) → safe-rewrite → 拒答 |
+| **Self-Check** | 事实自检 | DeepSeek deepseek-chat (LLM-as-Judge) | 核查回答每条事实是否有原文依据，score < 0.7 触发保守拒答 |
 
 ### Chunk 设计
 
@@ -165,70 +165,31 @@ CONDENSE_PROMPT = """根据对话摘要和历史，将用户的最新问题改�
 - 摘要内容：业务对象、公式/数字、筛选条件、未解决问题
 - 永不删除原始消息，摘要只用于 condense 上下文窗口控制
 
-### Self-Check 回答准入机制
-
-#### 设计理念
-
-Self-Check 不是「评分」，而是**回答准入机制**：任何回答必须在逐条核验通过后才允许返回。流式接口采用「缓冲生成→核验→流式」策略，确保用户不会看到未经核验的内容。
-
-#### 核验流程
+### Self-Check 事实自检设计
 
 ```
-生成回答（要求每条事实带 [来源：文档名-片段N] 标记）
-  │
-  ▼
-LLM 逐 claim 核验（输出结构化 JSON）
-  │
-  ├─ 全部 supported/inference ──→ final_action: pass → 直接返回
-  │
-  ├─ 存在 unsupported/contradicted ──→ final_action: rewrite
-  │     │                                    │
-  │     ├─ 安全改写成功 ──→ 返回修正后回答
-  │     └─ 改写失败 ──→ final_action: refuse → 拒答
-  │
-  └─ JSON 解析失败 / LLM 调用失败 ──→ final_action: refuse → 拒答
+生成回答后 → 调用 LLM 逐条核查 → 打分 0.0-1.0
+                                  │
+                  ┌───────────────┼───────────────┐
+                  ▼               ▼               ▼
+             score ≥ 0.7    0.4 ≤ score < 0.7    score < 0.4
+             正常返回         资料不足         可疑内容
 ```
-
-#### 逐条核验格式
 
 ```python
-SELF_CHECK_PROMPT = """逐条核查 AI 回答中的每一项关键事实声明。
+SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中的关键数据、公式、规则
+是否都能在检索上下文中找到原文支持。
 
-每条 claim 判定：
-- supported：claim 在对应片段中有明确原文
-- unsupported：claim 在检索上下文中找不到任何依据
-- contradicted：claim 与上下文信息冲突
-- inference：上下文信息的合理推断
-
-输出严格 JSON。"""
+评分标准：
+- 1.0: 所有关键事实在上下文中有明确原文
+- 0.8-0.9: 大部分事实有依据，少量合理推断
+- 0.4-0.7: 部分事实缺乏依据
+- 0.0-0.3: 大量编造或与上下文冲突"""
 ```
 
-```json
-{
-  "claims": [
-    {"claim": "客单价 = 销售额 ÷ 来客数", "verdict": "supported", "source_fragment": "分类-片段1"},
-    {"claim": "2020年客单价增长了15%", "verdict": "unsupported", "source_fragment": null}
-  ],
-  "overall_score": 0.5,
-  "final_action": "rewrite"
-}
-```
-
-#### 保守失败策略
-
-- JSON 解析失败 → 直接拒答（不赋默认分）
-- LLM API 调用失败 → 直接拒答
-- 安全改写失败 → 拒答
-- 安全改写返回内容过短（< 10 字符）→ 拒答
-
-#### 流式安全策略
-
-流式接口（`/api/chat/stream`）**不使用流式 LLM 生成**，而是：
-1. 用非流式 LLM 生成完整回答
-2. 运行 Self-Check 核验管线
-3. 将**核验通过**的回答以 2 字符/块的粒度流式发送
-
-这牺牲了首 token 延迟（TTFB），但确保用户看到的每一帧都是经过核验的安全内容。
+阈值策略：
+- **score ≥ 0.7**：通过，正常返回回答
+- **score < 0.7**：拒绝，返回 `"抱歉，资料不足，我无法确认该问题的准确答案。现有文档中没有找到足够的依据来回答您的问题，建议查阅原始文档或联系相关同事确认。"`
 
 ### Embedding 设计
 
@@ -258,8 +219,8 @@ SELF_CHECK_PROMPT = """逐条核查 AI 回答中的每一项关键事实声明�
 - **Query 改写** — LLM 自动将模糊口语化问题转为精确检索查询
 - **多轮 Condense** — 对话上下文压缩，支持多轮追问
 - **多轮记忆** — 持久化会话摘要，超 8 条消息自动合并，长对话不丢上下文
-- **Self-Check** — 逐 claim 核验（支持/不支持/矛盾/推断）→ 安全改写 → 拒答三级准入
-- **流式输出** — SSE 协议，缓冲核验后逐块输出（2 字符/块），核验不通过自动拒答
+- **Self-Check** — LLM-as-Judge 事实自检，低置信度自动保守拒答
+- **流式输出** — SSE 协议，逐字渲染，首 token 可见时间 < 2s
 - **知识库管理 UI** — 文档上传、删除、列表查看、一键重建索引，无需命令行
 - **来源可追溯** — 每轮回答附带 Top-5 检索片段（含 rerank_score），HTML 折叠展开
 - **RESTful API** — FastAPI + Swagger 文档（`/docs`）
@@ -344,7 +305,7 @@ company-rag/
 ├── chunker.py              # RecursiveCharacterTextSplitter 分块策略
 ├── embeddings.py           # 硅基流动 BGE-large-zh-v1.5 Embedding 配置
 ├── vector_store.py         # ChromaDB 向量库 + BM25Retriever + 索引持久化
-├── rag_chain.py            # RAG 核心管线：Query改写→Condense(摘要+上下文)→混合检索→Reranker→生成(内联来源标注)→Self-Check(逐claim核验→safe-rewrite→refuse)→缓冲核验后流式输出
+├── rag_chain.py            # RAG 核心管线：Query改写→Condense(摘要+上下文)→混合检索→Reranker→生成→Self-Check→流式输出
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
