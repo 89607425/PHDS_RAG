@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from vector_store import get_vector_store, get_bm25_retriever
 import httpx
 
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -35,12 +35,15 @@ RAG_SYSTEM = """你是一个公司内部知识助手。请根据以下检索到�
 2. 如果文档中没有相关内容，明确告知"根据现有文档无法回答该问题"
 3. 回答简洁、准确、条理清晰
 4. 涉及具体数字、日期、金额时，务必引用原文
-5. 回答末尾标注信息来源"""
+5. **每条关键事实后必须标注来源**，格式：`[来源：文档名-片段N]`
+   例如：会员品单价 = 销售额 / 来客数 [来源：客单价-片段2]
+6. 不要在文末重复罗列来源，直接内联标注"""
 
 FALLBACK_SYSTEM = """你是一个公司内部知识助手。
 当前知识库中没有已上传的文档，以下回答基于通用知识，仅供参考。"""
 
-LOW_CONFIDENCE_RESPONSE = "抱歉，资料不足，我无法确认该问题的准确答案。现有文档中没有找到足够的依据来回答您的问题，建议查阅原始文档或联系相关同事确认。"
+REFUSE_RESPONSE = "抱歉，根据现有文档无法回答该问题。建议查阅原始文档或联系相关同事确认。"
+VERIFY_FAILED_RESPONSE = "核验失败，暂无法确认该回答的准确性。请稍后重试或查阅原始文档。"
 
 
 def _check_knowledge_base() -> bool:
@@ -98,17 +101,16 @@ def rewrite_query(question: str) -> str:
 
 # ===== 2. Multi-turn Condense =====
 
-CONDENSE_PROMPT = """你是一个对话压缩助手。根据对话历史，将用户的最新问题改写为一个不依赖上下文也能理解的独立问题。
+CONDENSE_PROMPT = """你是一个对话压缩助手。根据提供的会话摘要和最近对话，将用户的最新问题改写为一个不依赖上下文也能理解的独立问题。
 
-对话历史：
-{history}
+{session_context}
 
 用户最新问题：{question}
 
 请将最新问题改写为独立的检索查询（只输出改写后的问题）："""
 
 
-def condense_question(question: str, history: list[dict]) -> str:
+def condense_question(question: str, history: list[dict], summary: str = None) -> str:
     if not history:
         return question
     try:
@@ -117,8 +119,13 @@ def condense_question(question: str, history: list[dict]) -> str:
             f"{'用户' if m['role'] == 'user' else '助手'}: {m['content'][:200]}"
             for m in recent
         )
+        session_context = ""
+        if summary:
+            session_context = f"## 会话摘要（包含早期对话中的业务对象、指标、筛选条件等上下文）\n{summary}\n\n## 最近对话\n{history_text}"
+        else:
+            session_context = f"## 对话历史\n{history_text}"
         llm = get_llm()
-        prompt = CONDENSE_PROMPT.format(history=history_text, question=question)
+        prompt = CONDENSE_PROMPT.format(session_context=session_context, question=question)
         resp = llm.invoke(prompt)
         condensed = resp.content.strip()
         if len(condensed) > 3:
@@ -220,9 +227,39 @@ def hybrid_retrieve(query: str, top_n: int = 20) -> list[dict]:
     return final
 
 
-# ===== 6. Self-Check =====
+# ===== 6. Self-Check (per-claim verification) =====
 
-SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中的关键数据、公式、规则是否都能在检索上下文中找到原文支持。
+SELF_CHECK_PROMPT = """你是一个严格的事实核查员。逐条核查 AI 回答中的每一项关键事实声明是否能在检索上下文中找到原文支持。
+
+## 检索上下文（每个片段有唯一 ID）
+{context}
+
+## 用户问题
+{question}
+
+## AI 回答（含来源标记）
+{answer}
+
+## 核查要求
+1. 将回答拆解为独立的事实声明（claim）
+2. 对每条 claim，在上下文中找到最相关的片段 ID
+3. 判断 verdict：
+   - supported：claim 在对应片段中有明确原文
+   - unsupported：claim 在检索上下文中找不到任何依据
+   - contradicted：claim 与上下文中的信息冲突
+   - inference：claim 是上下文信息的合理推断（非原文但逻辑一致）
+4. 判定 overall_score（0.0-1.0）和 final_action
+
+## 输出严格 JSON（不要 markdown 代码块，直接输出纯 JSON）
+{{"claims":[{{"claim":"...","verdict":"supported|unsupported|contradicted|inference","source_fragment":"文档名-片段N 或 null"}}],"overall_score":0.0,"final_action":"pass|rewrite|refuse"}}
+
+## final_action 规则
+- pass：所有 verdict 为 supported 或 inference，无 unsupported/contradicted
+- rewrite：存在 unsupported 或 contradicted 的 claim，但核心问题仍有 supported claim 可回答
+- refuse：retrieved docs 中没有与问题相关的任何内容，或全部 claim 均为 unsupported/contradicted"""
+
+
+SAFE_REWRITE_PROMPT = """你是一个回答安全改写员。以下回答经核查有部分事实无法在检索上下文中找到依据，请仅保留有证据支持的内容，删除或改写不被支持的部分。
 
 ## 检索上下文
 {context}
@@ -230,49 +267,133 @@ SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中�
 ## 用户问题
 {question}
 
-## AI 回答
-{answer}
+## 原始回答
+{original_answer}
 
-请严格逐条核查。输出 JSON：
-{{"score": 0.0-1.0, "reason": "一句中文理由"}}
+## 核查结果（只关注 unsupported/contradicted 的 claim）
+{failed_claims}
 
-评分标准：
-- 1.0: 所有关键事实在上下文中有明确原文
-- 0.8-0.9: 大部分事实有依据，少量合理推断
-- 0.4-0.7: 部分事实缺乏依据
-- 0.0-0.3: 大量编造或与上下文冲突"""
+## 改写规则
+1. 仅保留检索上下文中有证据支持的信息
+2. 可以简化、合并，但不能添加任何新信息
+3. 改写后的每条事实仍需带来源标记 [来源：文档名-片段N]
+4. 如果改写后完全没有可回答的内容，直接输出：REFUSE
+5. 直接输出改写后的回答，不要任何解释或前缀"""
 
 
 def self_check(question: str, answer: str, context: str) -> dict:
     try:
         llm = get_llm()
         prompt = SELF_CHECK_PROMPT.format(
-            question=question, answer=answer, context=context[:3000]
+            question=question, answer=answer, context=context[:4000]
         )
         resp = llm.invoke(prompt)
         text = resp.content.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("\n", 1)[0]
-        result = json.loads(text)
-        logger.info(f"Self-check score: {result.get('score', '?')}")
+
+        # Robust JSON extraction
+        import re as _re
+        # Remove markdown code fences
+        text = _re.sub(r'```(?:json)?\s*', '', text)
+        text = _re.sub(r'```', '', text)
+        # Find the first '{' and last '}'
+        start = text.find('{')
+        end = text.rfind('}')
+        if start == -1 or end == -1 or start >= end:
+            raise json.JSONDecodeError("No JSON object found", text, 0)
+        json_text = text[start:end+1]
+
+        result = json.loads(json_text)
+        logger.info(f"Self-check: score={result.get('overall_score', '?')}, "
+                    f"action={result.get('final_action', '?')}, claims={len(result.get('claims', []))}")
+        for c in result.get("claims", []):
+            v = c.get("verdict", "?")
+            if v in ("unsupported", "contradicted"):
+                logger.warning(f"  ⚠ {v}: {c.get('claim', '?')[:80]}")
         return result
+    except (json.JSONDecodeError, KeyError) as e:
+        raw_preview = resp.content[:200] if 'resp' in locals() else 'N/A'
+        logger.error(f"Self-check JSON parse failed: {e}. Raw: {raw_preview}")
+        return {"claims": [], "overall_score": 0.0, "final_action": "refuse",
+                "_error": "parse_failed"}
     except Exception as e:
-        logger.warning(f"Self-check failed: {e}")
-        return {"score": 0.8, "reason": "check failed"}
+        logger.error(f"Self-check LLM call failed: {e}")
+        return {"claims": [], "overall_score": 0.0, "final_action": "refuse",
+                "_error": "llm_failed"}
+
+
+def safe_rewrite(question: str, original_answer: str, context: str, check_result: dict) -> str | None:
+    failed = [c for c in check_result.get("claims", [])
+              if c.get("verdict") in ("unsupported", "contradicted")]
+    if not failed and check_result.get("final_action") != "rewrite":
+        return None
+
+    try:
+        llm = get_llm()
+        failed_text = "\n".join(f"- [{c.get('verdict')}] {c.get('claim', '')}" for c in failed[:10])
+        prompt = SAFE_REWRITE_PROMPT.format(
+            question=question,
+            original_answer=original_answer,
+            context=context[:3000],
+            failed_claims=failed_text or "无具体失败项",
+        )
+        resp = llm.invoke(prompt)
+        rewritten = resp.content.strip()
+        if rewritten and rewritten.strip() != "REFUSE" and len(rewritten) > 10:
+            logger.info(f"Safe rewrite succeeded: {len(rewritten)} chars")
+            return rewritten
+        logger.info("Safe rewrite returned REFUSE or too short")
+    except Exception as e:
+        logger.warning(f"Safe rewrite failed: {e}")
+    return None
 
 
 # ===== Main API =====
 
-def ask(question: str, conversation_history: list[dict] = None) -> dict:
-    t0 = time.time()
+def _build_sources(docs: list[dict]) -> list[dict]:
+    return [
+        {
+            "title": d.get("metadata", {}).get("title", ""),
+            "source": d.get("metadata", {}).get("source", ""),
+            "content": d.get("content", "")[:300],
+            "chunk_index": d.get("metadata", {}).get("chunk_index", 0),
+            "rerank_score": d.get("rerank_score"),
+            "bm25_score": d.get("bm25_score"),
+        }
+        for d in docs
+    ]
 
+
+def _verify_and_finalize(question: str, raw_answer: str, context: str) -> dict:
+    """Run self-check and safe-rewrite pipeline. Returns {final_answer, check_result}."""
+    check_result = self_check(question, raw_answer, context)
+    action = check_result.get("final_action", "refuse")
+
+    if action == "pass":
+        return {"final_answer": raw_answer, "check_result": check_result}
+
+    if action == "rewrite":
+        rewritten = safe_rewrite(question, raw_answer, context, check_result)
+        if rewritten:
+            return {"final_answer": rewritten, "check_result": check_result,
+                    "rewritten": True}
+
+    if check_result.get("_error"):
+        logger.warning(f"Verification failed due to error: {check_result.get('_error')}")
+        return {"final_answer": VERIFY_FAILED_RESPONSE, "check_result": check_result,
+                "_refuse_reason": check_result.get("_error")}
+
+    return {"final_answer": REFUSE_RESPONSE, "check_result": check_result}
+
+
+def ask(question: str, conversation_history: list[dict] = None,
+        conv_id: int = None, summary: str = None, summarized_until: int = 0) -> dict:
+    t0 = time.time()
     original_question = question
 
     if conversation_history:
-        question = condense_question(question, conversation_history)
+        question = condense_question(question, conversation_history, summary)
 
     rewritten = rewrite_query(question)
-
     has_kb = _check_knowledge_base()
     sources = []
 
@@ -292,31 +413,30 @@ def ask(question: str, conversation_history: list[dict] = None) -> dict:
                 llm = get_llm()
                 messages = [SystemMessage(content=RAG_SYSTEM), HumanMessage(content=user_content)]
                 response = llm.invoke(messages)
-                answer = response.content
+                raw_answer = response.content
                 tokens_used = _extract_tokens(response)
 
-                check_result = self_check(question, answer, context)
-                if check_result.get("score", 0) < 0.7:
-                    answer = LOW_CONFIDENCE_RESPONSE
+                verified = _verify_and_finalize(question, raw_answer, context)
+                final_answer = verified["final_answer"]
+                check_result = verified["check_result"]
 
-                sources = [
-                    {
-                        "title": d.get("metadata", {}).get("title", ""),
-                        "source": d.get("metadata", {}).get("source", ""),
-                        "content": d.get("content", "")[:300],
-                        "chunk_index": d.get("metadata", {}).get("chunk_index", 0),
-                        "rerank_score": d.get("rerank_score"),
-                        "bm25_score": d.get("bm25_score"),
-                    }
-                    for d in retrieved_docs
-                ]
-
+                sources = _build_sources(retrieved_docs)
                 latency_ms = int((time.time() - t0) * 1000)
+
                 return {
-                    "answer": answer, "sources": sources, "has_kb": True,
-                    "latency_ms": latency_ms, "tokens_used": tokens_used,
+                    "answer": final_answer,
+                    "sources": sources,
+                    "has_kb": True,
+                    "latency_ms": latency_ms,
+                    "tokens_used": tokens_used,
                     "rewritten_query": rewritten if rewritten != original_question else None,
-                    "self_check_score": check_result.get("score"),
+                    "self_check": {
+                        "score": check_result.get("overall_score"),
+                        "action": check_result.get("final_action"),
+                        "claims": check_result.get("claims", []),
+                        "rewritten": verified.get("rewritten", False),
+                        "_refuse_reason": verified.get("_refuse_reason"),
+                    },
                 }
         except Exception as e:
             logger.error(f"RAG pipeline failed: {e}")
@@ -332,11 +452,12 @@ def ask(question: str, conversation_history: list[dict] = None) -> dict:
     }
 
 
-def ask_stream(question: str, conversation_history: list[dict] = None) -> Generator[str, None, None]:
+def ask_stream(question: str, conversation_history: list[dict] = None,
+               conv_id: int = None, summary: str = None, summarized_until: int = 0) -> Generator[str, None, None]:
     original_question = question
 
     if conversation_history:
-        question = condense_question(question, conversation_history)
+        question = condense_question(question, conversation_history, summary)
 
     rewritten = rewrite_query(question)
     has_kb = _check_knowledge_base()
@@ -368,16 +489,33 @@ def ask_stream(question: str, conversation_history: list[dict] = None) -> Genera
                     "rewritten_query": rewritten if rewritten != question else None,
                 }}, ensure_ascii=False) + "\n"
 
-                llm = get_llm(streaming=True)
-                messages = [SystemMessage(content=RAG_SYSTEM), HumanMessage(content=user_content)]
-                full_answer = ""
-                for chunk in llm.stream(messages):
-                    if chunk.content:
-                        full_answer += chunk.content
-                        yield json.dumps({"type": "token", "data": chunk.content}, ensure_ascii=False) + "\n"
+                # Generate full answer first (non-streaming) for safety verification
+                yield json.dumps({"type": "status", "data": "生成中，请稍候..."}, ensure_ascii=False) + "\n"
 
-                check_result = self_check(question, full_answer, context)
-                yield json.dumps({"type": "self_check", "data": check_result}, ensure_ascii=False) + "\n"
+                llm_sync = get_llm(streaming=False)
+                messages = [SystemMessage(content=RAG_SYSTEM), HumanMessage(content=user_content)]
+                resp = llm_sync.invoke(messages)
+                raw_answer = resp.content
+
+                verified = _verify_and_finalize(question, raw_answer, context)
+                final_answer = verified["final_answer"]
+                check_result = verified["check_result"]
+
+                yield json.dumps({"type": "self_check", "data": {
+                    "score": check_result.get("overall_score"),
+                    "action": check_result.get("final_action"),
+                    "claims": [
+                        {"claim": c.get("claim", ""), "verdict": c.get("verdict", ""),
+                         "source_fragment": c.get("source_fragment")}
+                        for c in check_result.get("claims", [])
+                    ],
+                    "rewritten": verified.get("rewritten", False),
+                }}, ensure_ascii=False) + "\n"
+
+                # Stream the verified final answer token by token
+                for i in range(0, len(final_answer), 2):
+                    chunk = final_answer[i:i+2]
+                    yield json.dumps({"type": "token", "data": chunk}, ensure_ascii=False) + "\n"
 
                 yield json.dumps({"type": "done", "data": {}}, ensure_ascii=False) + "\n"
                 return
@@ -390,3 +528,61 @@ def ask_stream(question: str, conversation_history: list[dict] = None) -> Genera
         if chunk.content:
             yield json.dumps({"type": "token", "data": chunk.content}, ensure_ascii=False) + "\n"
     yield json.dumps({"type": "done", "data": {}}, ensure_ascii=False) + "\n"
+
+
+# ===== 7. Persistent Conversation Summary =====
+
+SUMMARIZE_PROMPT = """你是一个会话摘要助手。根据已有的摘要和新的对话内容，生成更新后的会话摘要。
+
+## 已有摘要
+{old_summary}
+
+## 新对话
+{new_conversation}
+
+## 要求
+1. 将新对话中的关键信息合并到已有摘要中，新摘要覆盖旧摘要
+2. 必须保留以下信息（如有）：
+   - 用户关注的具体业务对象（如会员品单价、客单价、库存周转等指标）
+   - 数字、公式和计算规则
+   - 区域/门店/时间范围等筛选条件
+   - 用户尚未得到满意回答的问题
+3. 只基于对话内容，不得编造信息
+4. 用简洁的中文分条列出（3-8 条）
+5. 直接输出摘要，不要任何前缀解释"""
+
+
+def maybe_update_summary(conv_id: int):
+    from auth import get_conversation_summary, get_conversation_messages_from, update_conversation_summary
+
+    summary, summarized_until = get_conversation_summary(conv_id)
+    new_msgs = get_conversation_messages_from(conv_id, summarized_until)
+
+    if len(new_msgs) < 8:
+        logger.info(f"[Summary] conv={conv_id}: {len(new_msgs)} unsummarized msgs (threshold: 8), skip")
+        return
+
+    logger.info(f"[Summary] conv={conv_id}: {len(new_msgs)} unsummarized msgs, triggering LLM summarization...")
+
+    old_summary_text = summary or "（新对话，暂无历史摘要）"
+    new_conversation = "\n".join(
+        f"{'用户' if m['role'] == 'user' else '助手'}: {m['content'][:300]}"
+        for m in new_msgs
+    )
+
+    try:
+        llm = get_llm()
+        prompt = SUMMARIZE_PROMPT.format(old_summary=old_summary_text, new_conversation=new_conversation)
+        resp = llm.invoke(prompt)
+        new_summary = resp.content.strip()
+        if len(new_summary) < 10:
+            logger.warning(f"[Summary] conv={conv_id}: generated summary too short, skip")
+            return
+    except Exception as e:
+        logger.warning(f"[Summary] conv={conv_id}: LLM summarization failed: {e}")
+        return
+
+    last_msg_id = new_msgs[-1]["id"]
+    update_conversation_summary(conv_id, new_summary, last_msg_id)
+    logger.info(f"[Summary] conv={conv_id}: summary updated → covers up to message #{last_msg_id}, "
+                f"length={len(new_summary)} chars")

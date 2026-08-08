@@ -61,6 +61,14 @@ def init_db():
                 INDEX idx_user (user_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """)
+        for col, ddl in [
+            ("summary", "ALTER TABLE conversations ADD COLUMN summary MEDIUMTEXT NULL"),
+            ("summarized_until_message_id", "ALTER TABLE conversations ADD COLUMN summarized_until_message_id INT NOT NULL DEFAULT 0"),
+        ]:
+            try:
+                cur.execute(ddl)
+            except Exception:
+                pass
         cur.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id              INT AUTO_INCREMENT PRIMARY KEY,

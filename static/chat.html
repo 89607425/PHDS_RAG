@@ -274,6 +274,29 @@ body {
 }
 .topbar { display:none; align-items:center; padding: 10px 12px; border-bottom: 1px solid var(--border-light); }
 @media (max-width: 768px) { .topbar { display:flex; } }
+
+.sc-status { margin-top: 8px; padding: 8px 12px; border-radius: var(--radius-sm); font-size: 12px; display: flex; align-items: center; gap: 8px; }
+.sc-status.info { background: var(--accent-light); color: var(--accent); border: 1px solid rgba(37,99,235,0.15); }
+
+.sc-summary { margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); overflow: hidden; }
+.sc-summary summary { padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 500; list-style: none; display: flex; align-items: center; gap: 6px; }
+.sc-summary summary::-webkit-details-marker { display: none; }
+.sc-summary summary::before { content: "▸"; font-size: 10px; transition: transform 0.2s; }
+.sc-summary[open] summary::before { transform: rotate(90deg); }
+.sc-summary.pass summary { color: var(--success); }
+.sc-summary.rewrite summary { color: var(--warning); }
+.sc-summary.refuse summary { color: var(--danger); }
+
+.sc-claims { padding: 4px 0; }
+.sc-claim { padding: 8px 14px; border-top: 1px solid var(--border-light); font-size: 13px; display: flex; align-items: flex-start; gap: 8px; line-height: 1.5; }
+.sc-claim-text { flex: 1; color: var(--text-sec); }
+.sc-badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; flex-shrink: 0; white-space: nowrap; }
+.sc-badge.supported { background: #dcfce7; color: #16a34a; }
+.sc-badge.inference { background: #fef3c7; color: #d97706; }
+.sc-badge.unsupported { background: #fee2e2; color: #dc2626; }
+.sc-badge.contradicted { background: #fee2e2; color: #dc2626; }
+.sc-score { font-weight: 600; font-size: 12px; margin-left: auto; }
+.sc-action-summary { padding: 8px 14px; border-top: 1px solid var(--border-light); font-size: 12px; color: var(--text-muted); font-weight: 500; }
 </style>
 </head>
 <body>
@@ -606,7 +629,8 @@ async function sendMessage() {
   const msgBodyEl = msgEl.querySelector('.msg-content');
   let fullAnswer = '';
   let sources = [];
-  let selfCheckScore = null;
+  let selfCheckData = null;
+  let hasTokens = false;
 
   try {
     const resp = await fetch('/api/chat/stream', {
@@ -635,12 +659,17 @@ async function sendMessage() {
           const event = JSON.parse(line.slice(6));
           if (event.type === 'sources') {
             sources = event.data;
+          } else if (event.type === 'status') {
+            msgBubbleEl.textContent = event.data;
+            scrollToBottom();
+          } else if (event.type === 'self_check') {
+            selfCheckData = event.data;
           } else if (event.type === 'token') {
+            if (!hasTokens) { fullAnswer = ''; }
+            hasTokens = true;
             fullAnswer += event.data;
             msgBubbleEl.textContent = fullAnswer;
             scrollToBottom();
-          } else if (event.type === 'self_check') {
-            selfCheckScore = event.data.score;
           } else if (event.type === 'done') {
           }
         } catch(e) {}
@@ -659,6 +688,11 @@ async function sendMessage() {
           `).join('')}
         </details>`;
       msgBodyEl.insertAdjacentHTML('beforeend', srcHtml);
+    }
+
+    if (selfCheckData) {
+      const scHtml = buildSelfCheckHtml(selfCheckData);
+      msgBodyEl.insertAdjacentHTML('beforeend', scHtml);
     }
 
     if (!state.activeConvId) {
@@ -688,6 +722,29 @@ function addStreamingBubble() {
     </div>`;
   $('#messages').appendChild(el);
   return el;
+}
+
+function buildSelfCheckHtml(sc) {
+  const action = sc.action || 'pass';
+  const score = sc.score != null ? (sc.score * 100).toFixed(0) + '%' : 'N/A';
+  const VERDICT_LABELS = { supported: '支持', unsupported: '不支持', contradicted: '矛盾', inference: '推断' };
+  const ACTION_CONFIG = {
+    pass: { label: '核验通过', icon: '✅', cls: 'pass' },
+    rewrite: { label: sc.rewritten ? '已修正后输出' : '需修正', icon: '⚠️', cls: 'rewrite' },
+    refuse: { label: '已拒答', icon: '⛔', cls: 'refuse' },
+  };
+  const cfg = ACTION_CONFIG[action] || ACTION_CONFIG.refuse;
+  let claimsHtml = '';
+  if (sc.claims && sc.claims.length > 0) {
+    claimsHtml = '<div class="sc-claims">' + sc.claims.map(function(c) {
+      const v = c.verdict || 'unsupported';
+      const src = c.source_fragment ? ' <span style="color:var(--text-muted);font-size:11px">[' + escHtml(c.source_fragment) + ']</span>' : '';
+      return '<div class="sc-claim"><span class="sc-badge ' + v + '">' + (VERDICT_LABELS[v] || v) + '</span><span class="sc-claim-text">' + escHtml(c.claim) + src + '</span></div>';
+    }).join('') + '</div>';
+  } else {
+    claimsHtml = '<div class="sc-claim"><span class="sc-badge unsupported">--</span><span class="sc-claim-text">未检测到可核验断言</span></div>';
+  }
+  return '<details class="sc-summary ' + cfg.cls + '"><summary>' + cfg.icon + ' ' + cfg.label + ' <span class="sc-score">置信度: ' + score + '</span></summary>' + claimsHtml + '</details>';
 }
 
 function newConversation() {

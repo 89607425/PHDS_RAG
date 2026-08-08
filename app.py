@@ -8,13 +8,14 @@ from fastapi import UploadFile, Form, File
 from pydantic import BaseModel
 from datetime import datetime
 from starlette.middleware.base import BaseHTTPMiddleware
-from rag_chain import ask, ask_stream, _check_knowledge_base
+from rag_chain import ask, ask_stream, _check_knowledge_base, maybe_update_summary
 from kb_manager import list_documents, upload_document, delete_document, rebuild_index
 from database import init_db
 from auth import (
     send_verification_code, verify_code, create_session, validate_session,
     get_user_conversations, create_conversation, delete_conversation,
     get_conversation_messages, save_message,
+    get_conversation_summary,
 )
 from dotenv import load_dotenv
 
@@ -373,9 +374,11 @@ async def api_chat(req: ChatRequest, request: Request):
 
     save_message(conv_id, "user", question)
 
+    summary, summarized_until = get_conversation_summary(conv_id)
     history_msgs = get_conversation_messages(conv_id)
     history = [{"role": m["role"], "content": _strip_html(m["content"])} for m in history_msgs[:-1]]
-    result = ask(question, conversation_history=history if history else None)
+    result = ask(question, conversation_history=history if history else None,
+                 conv_id=conv_id, summary=summary, summarized_until=summarized_until)
 
     sources = result.get("sources", [])
     stored_content = result["answer"]
@@ -395,6 +398,7 @@ async def api_chat(req: ChatRequest, request: Request):
             f'{src_items}</details>'
         )
     save_message(conv_id, "assistant", stored_content)
+    maybe_update_summary(conv_id)
 
     return {
         "conversation_id": conv_id,
@@ -403,7 +407,7 @@ async def api_chat(req: ChatRequest, request: Request):
         "has_kb": result.get("has_kb", False),
         "latency_ms": result.get("latency_ms", 0),
         "tokens_used": result.get("tokens_used", 0),
-        "self_check_score": result.get("self_check_score"),
+        "self_check": result.get("self_check", {}),
     }
 
 
@@ -421,6 +425,7 @@ async def api_chat_stream(req: ChatRequest, request: Request):
 
     save_message(conv_id, "user", question)
 
+    summary, summarized_until = get_conversation_summary(conv_id)
     history_msgs = get_conversation_messages(conv_id)
     history = [{"role": m["role"], "content": _strip_html(m["content"])} for m in history_msgs[:-1]]
 
@@ -428,7 +433,8 @@ async def api_chat_stream(req: ChatRequest, request: Request):
         full_answer = ""
         sources = []
         try:
-            for line in ask_stream(question, conversation_history=history if history else None):
+            for line in ask_stream(question, conversation_history=history if history else None,
+                                      conv_id=conv_id, summary=summary, summarized_until=summarized_until):
                 try:
                     event = json.loads(line)
                     if event["type"] == "sources":
@@ -456,6 +462,7 @@ async def api_chat_stream(req: ChatRequest, request: Request):
                     f'{src_items}</details>'
                 )
             save_message(conv_id, "assistant", stored)
+            maybe_update_summary(conv_id)
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'data': str(e)})}\n"
 

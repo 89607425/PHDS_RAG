@@ -183,3 +183,39 @@ def save_message(conv_id: int, role: str, content: str):
             "UPDATE conversations SET updated_at=NOW() WHERE id=%s", (conv_id,)
         )
     conn.close()
+
+
+def get_conversation_summary(conv_id: int) -> tuple[str | None, int]:
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT summary, summarized_until_message_id FROM conversations WHERE id=%s",
+            (conv_id,),
+        )
+        row = cur.fetchone()
+    conn.close()
+    if row:
+        return row.get("summary"), row.get("summarized_until_message_id", 0)
+    return None, 0
+
+
+def update_conversation_summary(conv_id: int, summary: str, until_message_id: int):
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE conversations SET summary=%s, summarized_until_message_id=%s WHERE id=%s",
+            (summary, until_message_id, conv_id),
+        )
+    conn.close()
+
+
+def get_conversation_messages_from(conv_id: int, after_message_id: int = 0) -> list[dict]:
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, role, content FROM messages WHERE conversation_id=%s AND id > %s ORDER BY id ASC",
+            (conv_id, after_message_id),
+        )
+        rows = cur.fetchall()
+    conn.close()
+    return [{"id": r["id"], "role": r["role"], "content": r["content"]} for r in rows]
