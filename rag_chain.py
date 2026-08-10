@@ -34,12 +34,26 @@ RAG_SYSTEM = """你是一个公司内部知识助手。请根据以下检索到�
 1. 只根据提供的文档片段回答，不要编造信息
 2. 如果文档中没有相关内容，明确告知"根据现有文档无法回答该问题"
 3. 回答简洁、准确、条理清晰
-4. 涉及具体数字、日期、金额时，务必引用原文"""
+4. 涉及具体数字、日期、金额时，务必引用原文
+
+## 格式要求
+- 使用 **粗体** 突出关键指标名称、数字和结论
+- 涉及对比数据（如环比、同比）时使用表格呈现：| 指标 | 上期 | 本期 | 变化 |
+- 涉及步骤或规则时使用编号列表：1. 2. 3.
+- 涉及要点罗列时使用无序列表：- 要点一 - 要点二"""
 
 FALLBACK_SYSTEM = """你是一个公司内部知识助手。
 当前知识库中没有已上传的文档，以下回答基于通用知识，仅供参考。"""
 
 LOW_CONFIDENCE_RESPONSE = "抱歉，资料不足，我无法确认该问题的准确答案。现有文档中没有找到足够的依据来回答您的问题，建议查阅原始文档或联系相关同事确认。"
+
+VISION_PROMPT = """请详细描述这张截图/图片中的内容，包括：
+1. 图片中的文字内容（完整提取）
+2. 表格中的数据结构和数值
+3. 图表中的趋势、指标和数据含义
+4. UI 界面中的关键信息和布局
+
+如果图片中有数字、日期、金额、百分比等关键数据，请精确提取。"""
 
 
 def _check_knowledge_base() -> bool:
@@ -48,6 +62,32 @@ def _check_knowledge_base() -> bool:
         return vs._collection.count() > 0
     except Exception:
         return False
+
+
+def describe_image(image_base64: str) -> str | None:
+    """使用硅基流动视觉模型将图片转为文字描述，供 RAG 管线使用。"""
+    try:
+        vision_model = os.getenv("VISION_MODEL", "Qwen/Qwen3-VL-8B-Instruct")
+        vision_llm = ChatOpenAI(
+            model=vision_model,
+            api_key=os.getenv("SILICONFLOW_API_KEY"),
+            base_url="https://api.siliconflow.cn/v1",
+            temperature=0.1,
+            max_tokens=800,
+            http_client=_NO_PROXY_CLIENT,
+        )
+        msg = HumanMessage(content=[
+            {"type": "text", "text": VISION_PROMPT},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}},
+        ])
+        resp = vision_llm.invoke([msg])
+        description = resp.content.strip()
+        if description:
+            logger.info(f"Vision model described image: {description[:80]}...")
+            return description
+    except Exception as e:
+        logger.warning(f"Vision model failed: {e}")
+    return None
 
 
 def _extract_tokens(response) -> int:
@@ -283,14 +323,27 @@ def _build_sources(docs: list[dict]) -> list[dict]:
 
 
 def ask(question: str, conversation_history: list[dict] = None,
-        conv_id: int = None, summary: str = None, summarized_until: int = 0) -> dict:
+        conv_id: int = None, summary: str = None, summarized_until: int = 0,
+        image_base64: str = None) -> dict:
     t0 = time.time()
     original_question = question
 
-    if conversation_history:
+    image_description = None
+    if image_base64:
+        image_description = describe_image(image_base64)
+        if image_description:
+            question = f"【图片内容描述】\n{image_description}\n\n【用户问题】\n{question}"
+
+    is_pure_image = image_base64 and len(original_question.strip()) <= 10
+
+    if conversation_history and not image_base64:
         question = condense_question(question, conversation_history, summary)
 
-    rewritten = rewrite_query(question)
+    if is_pure_image:
+        rewritten = question
+    else:
+        rewritten = rewrite_query(question)
+
     has_kb = _check_knowledge_base()
     sources = []
 
@@ -344,13 +397,26 @@ def ask(question: str, conversation_history: list[dict] = None,
 
 
 def ask_stream(question: str, conversation_history: list[dict] = None,
-               conv_id: int = None, summary: str = None, summarized_until: int = 0) -> Generator[str, None, None]:
+               conv_id: int = None, summary: str = None, summarized_until: int = 0,
+               image_base64: str = None) -> Generator[str, None, None]:
     original_question = question
 
-    if conversation_history:
+    if image_base64:
+        yield json.dumps({"type": "status", "data": "正在识别图片内容..."}, ensure_ascii=False) + "\n"
+        image_description = describe_image(image_base64)
+        if image_description:
+            question = f"【图片内容描述】\n{image_description[:2000]}\n\n【用户问题】\n{question}"
+
+    is_pure_image = image_base64 and len(original_question.strip()) <= 10
+
+    if conversation_history and not image_base64:
         question = condense_question(question, conversation_history, summary)
 
-    rewritten = rewrite_query(question)
+    if is_pure_image:
+        rewritten = question
+    else:
+        rewritten = rewrite_query(question)
+
     has_kb = _check_knowledge_base()
 
     if has_kb:
@@ -386,7 +452,6 @@ def ask_stream(question: str, conversation_history: list[dict] = None,
                     if chunk.content:
                         yield json.dumps({"type": "token", "data": chunk.content}, ensure_ascii=False) + "\n"
 
-                yield json.dumps({"type": "done", "data": {}}, ensure_ascii=False) + "\n"
                 return
         except Exception as e:
             logger.error(f"Stream RAG failed: {e}")
@@ -396,7 +461,6 @@ def ask_stream(question: str, conversation_history: list[dict] = None,
     for chunk in llm.stream(messages):
         if chunk.content:
             yield json.dumps({"type": "token", "data": chunk.content}, ensure_ascii=False) + "\n"
-    yield json.dumps({"type": "done", "data": {}}, ensure_ascii=False) + "\n"
 
 
 # ===== 7. Persistent Conversation Summary =====

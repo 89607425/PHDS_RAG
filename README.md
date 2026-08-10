@@ -220,6 +220,7 @@ SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中�
 - **多轮 Condense** — 对话上下文压缩，支持多轮追问
 - **多轮记忆** — 持久化会话摘要，超 8 条消息自动合并，长对话不丢上下文
 - **Self-Check** — LLM-as-Judge 事实自检，低置信度自动保守拒答
+- **视觉识别** — 支持上传截图/图片，硅基流动 Qwen3-VL 视觉模型提取图中文字数据，辅助 RAG 问答
 - **流式输出** — SSE 协议，逐字渲染，首 token 可见时间 < 2s
 - **知识库管理 UI** — 文档上传、删除、列表查看、一键重建索引，无需命令行
 - **来源可追溯** — 每轮回答附带 Top-5 检索片段（含 rerank_score），HTML 折叠展开
@@ -305,7 +306,7 @@ company-rag/
 ├── chunker.py              # RecursiveCharacterTextSplitter 分块策略
 ├── embeddings.py           # 硅基流动 BGE-large-zh-v1.5 Embedding 配置
 ├── vector_store.py         # ChromaDB 向量库 + BM25Retriever + 索引持久化
-├── rag_chain.py            # RAG 核心管线：Query改写→Condense(摘要+上下文)→混合检索→Reranker→生成→Self-Check→流式输出
+├── rag_chain.py            # RAG 核心管线：视觉识别→Query改写→Condense(摘要+上下文)→混合检索→Reranker→生成→Self-Check→流式输出
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore

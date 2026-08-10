@@ -8,6 +8,7 @@ from fastapi import UploadFile, Form, File
 from pydantic import BaseModel
 from datetime import datetime
 from starlette.middleware.base import BaseHTTPMiddleware
+import threading
 from rag_chain import ask, ask_stream, _check_knowledge_base, maybe_update_summary
 from kb_manager import list_documents, upload_document, delete_document, rebuild_index
 from database import init_db
@@ -358,6 +359,7 @@ def _strip_html(text: str) -> str:
 class ChatRequest(BaseModel):
     question: str
     conversation_id: int | None = None
+    image: str | None = None
 
 
 @app.post("/api/chat")
@@ -378,7 +380,8 @@ async def api_chat(req: ChatRequest, request: Request):
     history_msgs = get_conversation_messages(conv_id)
     history = [{"role": m["role"], "content": _strip_html(m["content"])} for m in history_msgs[:-1]]
     result = ask(question, conversation_history=history if history else None,
-                 conv_id=conv_id, summary=summary, summarized_until=summarized_until)
+                 conv_id=conv_id, summary=summary, summarized_until=summarized_until,
+                 image_base64=req.image)
 
     sources = result.get("sources", [])
     stored_content = result["answer"]
@@ -432,41 +435,47 @@ async def api_chat_stream(req: ChatRequest, request: Request):
     def generate():
         full_answer = ""
         sources = []
+        conv_done = {"conv_id": conv_id}
         try:
             for line in ask_stream(question, conversation_history=history if history else None,
-                                      conv_id=conv_id, summary=summary, summarized_until=summarized_until):
+                                      conv_id=conv_id, summary=summary, summarized_until=summarized_until,
+                                      image_base64=req.image):
                 try:
                     event = json.loads(line)
                     if event["type"] == "sources":
                         sources = event["data"]
                     elif event["type"] == "token":
                         full_answer += event["data"]
-                    yield f"data: {line}"
+                    yield f"data: {line}\n"
                 except json.JSONDecodeError:
-                    yield f"data: {line}"
+                    yield f"data: {line}\n"
 
-            stored = full_answer
-            if sources:
-                src_items = ""
-                for i, s in enumerate(sources, 1):
-                    rerank_info = f" | rerank={s['rerank_score']:.3f}" if s.get("rerank_score") else ""
-                    src_items += (
-                        f'<div class="source-item">'
-                        f'<div class="source-item-title">来源 {i}: {html.escape(s["title"])} (chunk #{s["chunk_index"]}{rerank_info})</div>'
-                        f'<div class="source-item-text">{html.escape(s["content"])}</div>'
-                        f'</div>'
+            yield f"data: {json.dumps({'type': 'done', 'data': conv_done}, ensure_ascii=False)}\n\n"
+
+            def save_after():
+                stored = full_answer
+                if sources:
+                    src_items = ""
+                    for i, s in enumerate(sources, 1):
+                        rerank_info = f" | rerank={s['rerank_score']:.3f}" if s.get("rerank_score") else ""
+                        src_items += (
+                            f'<div class="source-item">'
+                            f'<div class="source-item-title">来源 {i}: {html.escape(s["title"])} (chunk #{s["chunk_index"]}{rerank_info})</div>'
+                            f'<div class="source-item-text">{html.escape(s["content"])}</div>'
+                            f'</div>'
+                        )
+                    stored += (
+                        f'\n\n<details class="msg-sources">'
+                        f'<summary>📚 检索到的知识来源 (Top-{len(sources)})</summary>'
+                        f'{src_items}</details>'
                     )
-                stored += (
-                    f'\n\n<details class="msg-sources">'
-                    f'<summary>📚 检索到的知识来源 (Top-{len(sources)})</summary>'
-                    f'{src_items}</details>'
-                )
-            save_message(conv_id, "assistant", stored)
-            maybe_update_summary(conv_id)
+                save_message(conv_id, "assistant", stored)
+                maybe_update_summary(conv_id)
+            threading.Thread(target=save_after, daemon=True).start()
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'data': str(e)})}\n"
+            yield f"data: {json.dumps({'type': 'error', 'data': str(e)}, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/kb/list")
