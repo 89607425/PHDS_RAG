@@ -23,10 +23,16 @@ def build_vector_store(chunks: list[dict]):
     texts = [c["text"] for c in chunks]
     metadatas = [c["metadata"] for c in chunks]
     vs = get_vector_store()
+    existing_ids = vs._collection.get()["ids"]
+    if existing_ids:
+        vs._collection.delete(ids=existing_ids)
+        print(f"已清空旧索引 ({len(existing_ids)} 个分块)")
     vs.add_texts(texts=texts, metadatas=metadatas)
     vs.persist()
     print(f"已写入 {len(texts)} 个分块到向量库")
     _save_bm25_index(chunks)
+    global _bm25_retriever
+    _bm25_retriever = None
     return vs
 
 

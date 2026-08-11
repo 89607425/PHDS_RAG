@@ -7,6 +7,11 @@ from typing import Generator
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from vector_store import get_vector_store, get_bm25_retriever
+from config import (
+    LLM_MODEL, TEMPERATURE, MAX_TOKENS,
+    RERANK_TOP_N, RERANKER_MODEL, RETRIEVAL_TOP_N, RRF_K,
+    SELF_CHECK_THRESHOLD, SUMMARY_THRESHOLD, VISION_MODEL,
+)
 import httpx
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -18,11 +23,11 @@ _NO_PROXY_CLIENT = httpx.Client(proxy=None)
 
 def get_llm(streaming: bool = False):
     return ChatOpenAI(
-        model=os.getenv("LLM_MODEL", "deepseek-chat"),
+        model=LLM_MODEL,
         api_key=os.getenv("DEEPSEEK_API_KEY"),
         base_url="https://api.deepseek.com/v1",
-        temperature=0.1,
-        max_tokens=2000,
+        temperature=TEMPERATURE,
+        max_tokens=MAX_TOKENS,
         streaming=streaming,
         http_client=_NO_PROXY_CLIENT,
     )
@@ -67,7 +72,7 @@ def _check_knowledge_base() -> bool:
 def describe_image(image_base64: str) -> str | None:
     """使用硅基流动视觉模型将图片转为文字描述，供 RAG 管线使用。"""
     try:
-        vision_model = os.getenv("VISION_MODEL", "Qwen/Qwen3-VL-8B-Instruct")
+        vision_model = VISION_MODEL
         vision_llm = ChatOpenAI(
             model=vision_model,
             api_key=os.getenv("SILICONFLOW_API_KEY"),
@@ -184,10 +189,10 @@ def rerank(query: str, documents: list[dict]) -> list[dict]:
             "https://api.siliconflow.cn/v1/rerank",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={
-                "model": "BAAI/bge-reranker-v2-m3",
+                "model": RERANKER_MODEL,
                 "query": query,
                 "documents": docs_text,
-                "top_n": min(5, len(docs_text)),
+                "top_n": min(RERANK_TOP_N, len(docs_text)),
             },
             timeout=30,
         )
@@ -201,17 +206,17 @@ def rerank(query: str, documents: list[dict]) -> list[dict]:
                     doc["rerank_score"] = r.get("relevance_score", 0)
                     ranked.append(doc)
             logger.info(f"Reranker: {len(documents)} -> {len(ranked)}")
-            return ranked[:5]
+            return ranked[:RERANK_TOP_N]
         else:
             logger.warning(f"Reranker API error: {resp.status_code} {resp.text[:200]}")
     except Exception as e:
         logger.warning(f"Reranker failed: {e}")
-    return documents[:5]
+    return documents[:RERANK_TOP_N]
 
 
 # ===== 4. Reciprocal Rank Fusion =====
 
-def reciprocal_rank_fusion(results_list: list[list[dict]], k: int = 60) -> list[dict]:
+def reciprocal_rank_fusion(results_list: list[list[dict]], k: int = RRF_K) -> list[dict]:
     scores = {}
     doc_map = {}
     for results in results_list:
@@ -230,7 +235,7 @@ def reciprocal_rank_fusion(results_list: list[list[dict]], k: int = 60) -> list[
 
 # ===== 5. Hybrid Retrieval =====
 
-def hybrid_retrieve(query: str, top_n: int = 20) -> list[dict]:
+def hybrid_retrieve(query: str, top_n: int = RETRIEVAL_TOP_N) -> list[dict]:
     vector_docs = []
     bm25_results = []
 
@@ -313,7 +318,7 @@ def _build_sources(docs: list[dict]) -> list[dict]:
         {
             "title": d.get("metadata", {}).get("title", ""),
             "source": d.get("metadata", {}).get("source", ""),
-            "content": d.get("content", "")[:300],
+            "content": d.get("content", ""),
             "chunk_index": d.get("metadata", {}).get("chunk_index", 0),
             "rerank_score": d.get("rerank_score"),
             "bm25_score": d.get("bm25_score"),
@@ -367,7 +372,7 @@ def ask(question: str, conversation_history: list[dict] = None,
                 tokens_used = _extract_tokens(response)
 
                 self_check_score = self_check(question, answer, context)
-                if self_check_score < 0.7:
+                if self_check_score < SELF_CHECK_THRESHOLD:
                     answer = LOW_CONFIDENCE_RESPONSE
 
                 sources = _build_sources(retrieved_docs)
@@ -435,7 +440,7 @@ def ask_stream(question: str, conversation_history: list[dict] = None,
                 yield json.dumps({"type": "sources", "data": [
                     {
                         "title": d.get("metadata", {}).get("title", ""),
-                        "content": d.get("content", "")[:300],
+                        "content": d.get("content", ""),
                         "chunk_index": d.get("metadata", {}).get("chunk_index", 0),
                         "rerank_score": d.get("rerank_score"),
                     }
@@ -491,7 +496,7 @@ def maybe_update_summary(conv_id: int):
     summary, summarized_until = get_conversation_summary(conv_id)
     new_msgs = get_conversation_messages_from(conv_id, summarized_until)
 
-    if len(new_msgs) < 8:
+    if len(new_msgs) < SUMMARY_THRESHOLD:
         logger.info(f"[Summary] conv={conv_id}: {len(new_msgs)} unsummarized msgs (threshold: 8), skip")
         return
 

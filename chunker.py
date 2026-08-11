@@ -1,9 +1,10 @@
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from config import CHUNK_SIZE, CHUNK_OVERLAP
 
 def split_documents(docs: list[dict]) -> list[dict]:
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=400,
-        chunk_overlap=60,
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
         separators=["\n\n", "\n", "。", "；", "，", " ", ""],
     )
 
