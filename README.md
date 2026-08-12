@@ -29,10 +29,11 @@
 |------|------|----------|----------|
 | **文档解析** | 提取原始文本 | python-docx、PyMuPDF (fitz)、email+BeautifulSoup | PyMuPDF 替代 PyPDF2 提升中文 PDF 解析质量；保留表格结构 |
 | **Chunk 切分** | 文本分段 | LangChain `RecursiveCharacterTextSplitter` | chunk_size=500、overlap=40、中文分隔符优先 |
+| **统一调参** | 所有可调参数集中管理 | `config.py` | 修改一处、全局生效，评测自动记录参数快照 |
 | **向量化** | 文本 → 稠密向量 | 硅基流动 `BAAI/bge-large-zh-v1.5` | 1024 维、中文优化、API 调用零 GPU |
 | **向量存储** | 向量索引 + BM25 | ChromaDB (HNSW) + rank-bm25 | 本地持久化、cosine 相似度、BM25 关键词互补 |
 | **混合检索** | 双路召回 + RRF 融合 | BM25 + 向量检索 → Reciprocal Rank Fusion | 语义匹配与关键词匹配互补，提升专业术语召回 |
-| **重排序** | Cross-Encoder 精排 | 硅基流动 `BAAI/bge-reranker-v2-m3` | 逐对计算 query-doc 语义相关性，Top-40 → Top-5 |
+| **重排序** | Cross-Encoder 精排 | 硅基流动 `BAAI/bge-reranker-v2-m3` | 逐对计算语义相关性，Top-40 候选 → 阈值过滤 → Top-5 |
 | **Query 改写** | 查询优化 | DeepSeek deepseek-chat | 补全缩写、口语化→正式术语，提升检索命中率 |
 | **多轮记忆** | 对话上下文 + 摘要 | DeepSeek deepseek-chat | 摘要 + 最近 6 条消息联合压缩；超 8 条自动触发摘要合并 |
 | **生成** | 答案合成 | DeepSeek `deepseek-chat` | temp=0.1、max_tokens=2000、流式输出 + SSE |
@@ -46,8 +47,8 @@
 
 ```python
 RecursiveCharacterTextSplitter(
-    chunk_size=400,
-    chunk_overlap=60,
+    chunk_size=500,
+    chunk_overlap=40,
     separators=["\n\n", "\n", "。", "；", "，", " ", ""],
 )
 ```
@@ -96,6 +97,7 @@ RRF 的优势：
 | **输入** | (query, document) 对 | 每对独立计算语义相关性 |
 | **输出** | relevance_score (0-1) | 逐对打分，降序排列 |
 | **Top-N** | 5 | 从 ~40-80 个候选文档中精选最优 5 个 |
+| **阈值** | RERANK_THRESHOLD=0 | relevance_score 低于此值的 chunk 丢弃，0 表示禁用 |
 
 ### Query 改写设计
 
@@ -250,8 +252,8 @@ cp .env.example .env
 | `SILICONFLOW_API_KEY` | 硅基流动 API 密钥（Embedding + Reranker） | `sk-xxx` |
 | `EMBEDDING_MODEL` | Embedding 模型 | `BAAI/bge-large-zh-v1.5` |
 | `LLM_MODEL` | 生成模型 | `deepseek-chat` |
-| `CHUNK_SIZE` | 分块大小 | `400` |
-| `CHUNK_OVERLAP` | 分块重叠 | `60` |
+| `CHUNK_SIZE` | 分块大小 | `500` |
+| `CHUNK_OVERLAP` | 分块重叠 | `40` |
 | `DB_PASS` | MySQL 密码 | |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | SMTP 配置 | `smtp.163.com:465` |
 
@@ -292,13 +294,15 @@ company-rag/
 ├── app.py                  # FastAPI 主服务：Auth 中间件 + 全部 API 路由
 ├── auth.py                 # 邮箱验证码发送 + Session 生命周期管理
 ├── database.py             # MySQL 连接池 + 5 张表自动建表
+├── config.py               # 统一参数管理：所有可调参数集中配置
 ├── build_index.py          # 命令行离线索引构建（解析→分块→向量化→入库）
 ├── kb_manager.py           # 知识库管理：文档 CRUD + 索引重建
 ├── document_loader.py      # 文档解析：docx(含表格)/pdf(PyMuPDF)/MIME HTML
 ├── chunker.py              # RecursiveCharacterTextSplitter 分块策略
 ├── embeddings.py           # 硅基流动 BGE-large-zh-v1.5 Embedding 配置
 ├── vector_store.py         # ChromaDB 向量库 + BM25Retriever + 索引持久化
-├── rag_chain.py            # RAG 核心管线：视觉识别→Query改写→Condense(摘要+上下文)→混合检索→Reranker→生成→Self-Check→流式输出
+├── rag_chain.py            # RAG 核心管线：视觉识别→Query改写→Condense→混合检索→Reranker→生成→Self-Check
+├── evaluate.py             # RAG 评估：Hit Rate/MRR/Recall/NDCG/Faithfulness/Relevancy
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore

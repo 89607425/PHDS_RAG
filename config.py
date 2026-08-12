@@ -15,8 +15,9 @@ TEMPERATURE = 0.1
 MAX_TOKENS = 2000
 
 # ---- Retrieval & Rank ----
-RETRIEVAL_TOP_N = 30
+RETRIEVAL_TOP_N = 40
 RERANK_TOP_N = 5
+RERANK_THRESHOLD = 0  # relevance_score 低于此值的 chunk 丢弃，0 表示禁用
 RRF_K = 60
 
 # ---- SELF-CHECK ----

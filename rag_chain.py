@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from vector_store import get_vector_store, get_bm25_retriever
 from config import (
     LLM_MODEL, TEMPERATURE, MAX_TOKENS,
-    RERANK_TOP_N, RERANKER_MODEL, RETRIEVAL_TOP_N, RRF_K,
+    RERANK_TOP_N, RERANK_THRESHOLD, RERANKER_MODEL, RETRIEVAL_TOP_N, RRF_K,
     SELF_CHECK_THRESHOLD, SUMMARY_THRESHOLD, VISION_MODEL,
 )
 import httpx
@@ -185,6 +185,7 @@ def rerank(query: str, documents: list[dict]) -> list[dict]:
     try:
         api_key = os.getenv("SILICONFLOW_API_KEY")
         docs_text = [d["content"][:500] for d in documents]
+        api_top_n = min(max(RERANK_TOP_N, RERANK_TOP_N * 4), len(docs_text))
         resp = httpx.post(
             "https://api.siliconflow.cn/v1/rerank",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -192,7 +193,7 @@ def rerank(query: str, documents: list[dict]) -> list[dict]:
                 "model": RERANKER_MODEL,
                 "query": query,
                 "documents": docs_text,
-                "top_n": min(RERANK_TOP_N, len(docs_text)),
+                "top_n": api_top_n,
             },
             timeout=30,
         )
@@ -204,9 +205,21 @@ def rerank(query: str, documents: list[dict]) -> list[dict]:
                 if idx < len(documents):
                     doc = documents[idx].copy()
                     doc["rerank_score"] = r.get("relevance_score", 0)
-                    ranked.append(doc)
-            logger.info(f"Reranker: {len(documents)} -> {len(ranked)}")
-            return ranked[:RERANK_TOP_N]
+                    if doc["rerank_score"] >= RERANK_THRESHOLD:
+                        ranked.append(doc)
+            if ranked:
+                logger.info(f"Reranker: {len(documents)} input -> {len(ranked)} above threshold {RERANK_THRESHOLD}")
+                return ranked[:RERANK_TOP_N]
+            elif RERANK_THRESHOLD > 0 and results:
+                best = results[0]
+                idx = best.get("index", 0)
+                if idx < len(documents):
+                    doc = documents[idx].copy()
+                    doc["rerank_score"] = best.get("relevance_score", 0)
+                    logger.info(f"Reranker: no chunk above {RERANK_THRESHOLD}, fallback to best (score={doc['rerank_score']:.3f})")
+                    return [doc]
+            logger.info(f"Reranker: 0 results above threshold")
+            return []
         else:
             logger.warning(f"Reranker API error: {resp.status_code} {resp.text[:200]}")
     except Exception as e:

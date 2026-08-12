@@ -146,9 +146,7 @@ input::placeholder { color:#cbd5e1 }
     </div>
   </div>
 </div>
-<div class="footer">
-  <div class="powered"><span class="powered-dot"></span>DeepSeek · 硅基流动 强力驱动</div>
-</div>
+
 </div>
 <script>
 var sentEmail='';var countdown=0;var timers=[];

@@ -1,8 +1,20 @@
 # 环境变量 (含 API 密钥)
 .env
 
+# 测试与评估
+test_set.json
+eval_results.md
+
 # 向量数据库
 chroma_db/
+
+# 检索索引
+bm25_index.pkl
+*.pkl
+
+# SQLite 数据库
+app_data.db
+*.db
 
 # 知识库文档
 wiki_docs/
