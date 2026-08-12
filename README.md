@@ -28,15 +28,15 @@
 | 层级 | 职责 | 技术选型 | 设计决策 |
 |------|------|----------|----------|
 | **文档解析** | 提取原始文本 | python-docx、PyMuPDF (fitz)、email+BeautifulSoup | PyMuPDF 替代 PyPDF2 提升中文 PDF 解析质量；保留表格结构 |
-| **Chunk 切分** | 文本分段 | LangChain `RecursiveCharacterTextSplitter` | chunk_size=400、overlap=60、中文分隔符优先 |
+| **Chunk 切分** | 文本分段 | LangChain `RecursiveCharacterTextSplitter` | chunk_size=500、overlap=40、中文分隔符优先 |
 | **向量化** | 文本 → 稠密向量 | 硅基流动 `BAAI/bge-large-zh-v1.5` | 1024 维、中文优化、API 调用零 GPU |
 | **向量存储** | 向量索引 + BM25 | ChromaDB (HNSW) + rank-bm25 | 本地持久化、cosine 相似度、BM25 关键词互补 |
 | **混合检索** | 双路召回 + RRF 融合 | BM25 + 向量检索 → Reciprocal Rank Fusion | 语义匹配与关键词匹配互补，提升专业术语召回 |
-| **重排序** | Cross-Encoder 精排 | 硅基流动 `BAAI/bge-reranker-v2-m3` | 逐对计算 query-doc 语义相关性，Top-20 → Top-5 |
+| **重排序** | Cross-Encoder 精排 | 硅基流动 `BAAI/bge-reranker-v2-m3` | 逐对计算 query-doc 语义相关性，Top-40 → Top-5 |
 | **Query 改写** | 查询优化 | DeepSeek deepseek-chat | 补全缩写、口语化→正式术语，提升检索命中率 |
 | **多轮记忆** | 对话上下文 + 摘要 | DeepSeek deepseek-chat | 摘要 + 最近 6 条消息联合压缩；超 8 条自动触发摘要合并 |
 | **生成** | 答案合成 | DeepSeek `deepseek-chat` | temp=0.1、max_tokens=2000、流式输出 + SSE |
-| **Self-Check** | 事实自检 | DeepSeek deepseek-chat (LLM-as-Judge) | 核查回答每条事实是否有原文依据，score < 0.7 触发保守拒答 |
+| **Self-Check** | 事实自检 | DeepSeek deepseek-chat (LLM-as-Judge) | 核查回答每条事实是否有原文依据，score < 0.8 触发保守拒答 |
 
 ### Chunk 设计
 
@@ -95,12 +95,7 @@ RRF 的优势：
 | **API** | 硅基流动 `/v1/rerank` | 调用简单，延迟 ~200-400ms |
 | **输入** | (query, document) 对 | 每对独立计算语义相关性 |
 | **输出** | relevance_score (0-1) | 逐对打分，降序排列 |
-| **Top-N** | 5 | 从 ~30 个候选文档中精选最优 5 个 |
-
-为什么需要 Reranker？
-- 向量检索和 BM25 都是**双塔模型**：query 和 doc 独立嵌入后比较，丢失了精细的交互信息
-- Reranker 是 **Cross-Encoder**：将 query 和 doc 拼接后过 transformer，捕捉 token 级别的交互
-- 初排（Top-20→RRF）保证召回率，精排（Reranker Top-5）保证准确率
+| **Top-N** | 5 | 从 ~40-80 个候选文档中精选最优 5 个 |
 
 ### Query 改写设计
 
@@ -172,7 +167,7 @@ CONDENSE_PROMPT = """根据对话摘要和历史，将用户的最新问题改�
                                   │
                   ┌───────────────┼───────────────┐
                   ▼               ▼               ▼
-             score ≥ 0.7    0.4 ≤ score < 0.7    score < 0.4
+             score ≥ 0.8    0.4 ≤ score < 0.8    score < 0.4
              正常返回         资料不足         可疑内容
 ```
 
@@ -188,8 +183,8 @@ SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中�
 ```
 
 阈值策略：
-- **score ≥ 0.7**：通过，正常返回回答
-- **score < 0.7**：拒绝，返回 `"抱歉，资料不足，我无法确认该问题的准确答案。现有文档中没有找到足够的依据来回答您的问题，建议查阅原始文档或联系相关同事确认。"`
+- **score ≥ 0.8**：通过，正常返回回答
+- **score < 0.8**：拒绝，返回 `"抱歉，资料不足，我无法确认该问题的准确答案。现有文档中没有找到足够的依据来回答您的问题，建议查阅原始文档或联系相关同事确认。"`
 
 ### Embedding 设计
 
@@ -198,7 +193,6 @@ SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中�
 | **模型** | BAAI/bge-large-zh-v1.5 | C-MTEB 中文榜单 Top-3 |
 | **向量维度** | 1024 | 高维向量强语义区分能力 |
 | **API** | 硅基流动 | 国内低延迟（~50ms/chunk） |
-| **批处理** | chunk_size=20 | 20 个 chunk 一批 embedding |
 | **归一化** | 已归一化 | 配合 cosine 相似度 |
 
 ### 文档解析设计
@@ -214,8 +208,7 @@ SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中�
 
 ## 功能特性
 
-- **零 GPU 依赖** — 全 API 调用（硅基流动 Embedding + Reranker + DeepSeek LLM），普通 CPU 服务器即可
-- **混合检索** — BM25 + 向量双路召回 → RRF 融合 → Cross-Encoder 精排
+- **混合检索** — BM25 + 向量双路召回 → RRF 融合 → Cross-Encoder 精排,HitRate达到93.33%!
 - **Query 改写** — LLM 自动将模糊口语化问题转为精确检索查询
 - **多轮 Condense** — 对话上下文压缩，支持多轮追问
 - **多轮记忆** — 持久化会话摘要，超 8 条消息自动合并，长对话不丢上下文
@@ -223,8 +216,7 @@ SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中�
 - **视觉识别** — 支持上传截图/图片，硅基流动 Qwen3-VL 视觉模型提取图中文字数据，辅助 RAG 问答
 - **流式输出** — SSE 协议，逐字渲染，首 token 可见时间 < 2s
 - **知识库管理 UI** — 文档上传、删除、列表查看、一键重建索引，无需命令行
-- **来源可追溯** — 每轮回答附带 Top-5 检索片段（含 rerank_score），HTML 折叠展开
-- **RESTful API** — FastAPI + Swagger 文档（`/docs`）
+- **来源可追溯** — 每轮回答附带 Top-5 检索片段（含 rerank_score）
 
 ---
 
@@ -241,8 +233,8 @@ SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中�
 ### 1. 安装依赖
 
 ```bash
-conda create -n RAG python=3.11 -y
-conda activate RAG
+conda create -n PHDS_RAG python=3.11 -y
+conda activate PHDS_RAG
 pip install -r requirements.txt
 ```
 
