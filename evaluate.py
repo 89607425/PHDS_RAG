@@ -12,7 +12,7 @@
   - Answer Relevancy: 回答是否紧扣问题（LLM-as-Judge）
 
 下一步:
-  1. 编辑 test_set.json，添加更多问题和标准答案
+  1. 编辑 eval/test_set.json，添加更多问题和标准答案
   2. 调整 chunk_size / prompt 后重新运行，对比指标变化
 """
 
@@ -26,6 +26,10 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
 load_dotenv()
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEST_SET_FILE = os.path.join(BASE_DIR, "eval", "test_set.json")
+RESULTS_FILE = os.path.join(BASE_DIR, "eval", "eval_results.md")
 
 from rag_chain import ask, format_docs, hybrid_retrieve
 from config import (
@@ -139,7 +143,7 @@ def main():
     print("  RAG 评估报告")
     print("=" * 60)
 
-    with open("test_set.json", "r", encoding="utf-8") as f:
+    with open(TEST_SET_FILE, "r", encoding="utf-8") as f:
         test_set = json.load(f)
     print(f"\n📋 测试集: {len(test_set)} 个问题")
 
@@ -244,10 +248,6 @@ def main():
     _append_to_markdown(test_set, hr, mrr, recall, ndcg, top_k, n_retrieval,
                         faithfulness_scores, relevancy_scores,
                         total_latency, details)
-
-
-RESULTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval_results.md")
-
 
 
 def _get_params_table() -> str:
