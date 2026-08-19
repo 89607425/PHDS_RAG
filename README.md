@@ -106,26 +106,26 @@ Advantages of RRF:
 ### Query Rewriting Design
 
 ```
-Original question: "卡片区有哪些内容？"
+Original question: "What's in the card area？"
      │
      ▼ (LLM)
-Rewritten query: "卡片区包含哪些指标项及其定义？"
+Rewritten query: "The items in the card area and their definitions？"
 ```
 
 ```python
-QUERY_REWRITE_PROMPT = """你是一个查询优化助手。将用户的模糊问题改写为更精确的检索查询。
+QUERY_REWRITE_PROMPT = """You are a query optimization assistant. The user's ambiguous question is rewritten into a more precise retrieval query。
 
 规则：
-1. 补全缩写和专业术语（如"环比"→"环比率/环比差值"）
-2. 将口语化表达转为正式术语
-3. 如果问题本身已经很精确，直接返回原问题
-4. 只输出改写后的问题，不要任何解释"""
+1. Complete abbreviations and technical terms (e.g. "ratio "→" ratio/ratio difference")
+2. Turn colloquial expressions into formal terms
+3. If the question is accurate, go back to the original question
+4. Output only the rewritten question without explanation. """
 ```
 
 Rewriting rules:
-- **Expand abbreviations**: `"环比"` → `"环比率/环比差值"`
-- **Normalize terminology**: `"客单价怎么算"` → `"客单价的计算公式是什么"`
-- **Disambiguate**: `"那个指标的排名"` → `"库存周转指标的门店排名规则"`
+- **Expand abbreviations**: `"Ratio "' → '" ratio/ratio difference"`
+- **Normalize terminology**: `"How to calculate the customer unit price? "' → '" What is the formula for calculating the customer unit price"`
+- **Disambiguate**: `"The index ranking "' → '" inventory turnover index store ranking rule"`
 - Similarity check: if the rewritten query is almost identical to the original, keep the original to avoid over-rewriting
 
 ### Multi-turn Memory Design
@@ -134,17 +134,17 @@ Rewriting rules:
 
 ```
 Conversation history:
-  User: 客单价有哪些类型？
-  Assistant: 客单价包含会员品单价、非会员品单价、整体品单价...
-  User: 它们的环比怎么看？
+  User: What are the types of guest unit price？
+  Assistant: The unit price includes the unit price of member products, the unit price of non-member products and the unit price of overall products...
+  User: How do they compare month-on-month？
   
-   ↓ (summary: "用户关注品单价类型及环比计算")
+   ↓ (summary: "Unit price type and month-on-month comparison calculation of user concern products")
 
-Standalone question: "会员品单价、非会员品单价、整体品单价的环比计算方法是什么？"
+Standalone question: "What is the month-on-month calculation method for the unit price of member products, non-member products and overall products？"
 ```
 
 ```python
-CONDENSE_PROMPT = """根据对话摘要和历史，将用户的最新问题改写为独立问题。"""
+CONDENSE_PROMPT = """Based on the dialogue summary and history, the user's most recent question is rewritten into independent questions。"""
 ```
 
 - Uses "summary + last 6 uncompressed messages" as the compression context
@@ -178,19 +178,19 @@ After generation → LLM verifies fact by fact → score 0.0-1.0
 ```
 
 ```python
-SELF_CHECK_PROMPT = """你是一个事实核查员。判断以下 AI 回答中的关键数据、公式、规则
-是否都能在检索上下文中找到原文支持。
+SELF_CHECK_PROMPT = """You're a fact checker. Determine the key data, formulas, rules in the following AI answers
+Whether all can find the original text support in the retrieval context.
 
 评分标准：
-- 1.0: 所有关键事实在上下文中有明确原文
-- 0.8-0.9: 大部分事实有依据，少量合理推断
-- 0.4-0.7: 部分事实缺乏依据
-- 0.0-0.3: 大量编造或与上下文冲突"""
+-1.0: All key facts are clear in the context
+-0.8-0.9: Most facts supported, few reasonable inferences
+-0.4-0.7: Some facts are not supported
+-0.0-0.3: heavy fabrication or context conflict """
 ```
 
 Threshold policy:
 - **score ≥ 0.8**: pass, return the answer normally
-- **score < 0.8**: refuse, return `"抱歉，资料不足，我无法确认该问题的准确答案。现有文档中没有找到足够的依据来回答您的问题，建议查阅原始文档或联系相关同事确认。"`
+- **score < 0.8**: refuse, return `"Sorry, there is not enough information to confirm the exact answer to this question. There is not enough evidence in the existing documents to answer your question. Please refer to the original documents or contact relevant colleagues for confirmation。"`
 
 ### Embedding Design
 
